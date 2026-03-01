@@ -1,6 +1,6 @@
 # AI Product Inventor
 
-Beginner-friendly Streamlit app for turning uploaded marketplace reviews into:
+Beginner-friendly Streamlit app for turning women hair-care consumer discussions into:
 - pain-point insights
 - sentiment and theme summaries
 - LLM-generated product concept briefs
@@ -12,27 +12,29 @@ The app follows a forward journey:
 2. `Insights`
 3. `Product Concepts`
 
-## Input Format
+## Input Sources
 
-Only Marketplace upload is supported.
-
-- File type: `.xlsx`
+1. Marketplace upload (`.xlsx`)
 - Required columns: exactly `Title` and `Body`
 - No extra columns allowed
 
-You can download a ready template directly in the app.
+2. Reddit public fetch (no API key)
+- Uses Reddit public JSON endpoints
+- Inputs: subreddits + keywords + lookback window
+- Extracts post titles/bodies and comment bodies
+
+You can still download a ready XLSX template directly in the app.
 
 ## What You See
 
 ### 1) Upload Data
-- Upload XLSX file
+- Choose source:
+  - Marketplace Upload (XLSX)
+  - Reddit Public Fetch (No API Key)
 - Dataset summary:
   - row count
   - column count
   - first 5 rows preview
-- Optional: upload Google Trends CSV for search-volume citation support
-  - direct link in app to Google Trends Explore
-  - download CSV there, then upload in app
 - `Next -> Insights` activates after valid upload
 
 ### 2) Insights
@@ -53,6 +55,8 @@ You can download a ready template directly in the app.
 - Generates concepts sequentially (one by one)
 - Shows generation progress at top
 - Renders each concept as soon as it is ready
+- Optional: upload Google Trends CSV in this step for search-traction enrichment
+  - app provides dynamic Google Trends Explore link with generated query set
 - Each concept contains only:
   - Product Name
   - Target Consumer Profile
