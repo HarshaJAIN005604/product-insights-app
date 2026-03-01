@@ -2,14 +2,12 @@ import io
 import json
 import re
 from collections import Counter
-from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import praw
 import streamlit as st
-from prawcore.exceptions import PrawcoreException
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 
 
@@ -35,6 +33,12 @@ if "current_dataset" not in st.session_state:
     st.session_state.current_dataset = None
 if "current_dataset_name" not in st.session_state:
     st.session_state.current_dataset_name = ""
+if "current_trends_dataset" not in st.session_state:
+    st.session_state.current_trends_dataset = None
+if "current_trends_dataset_name" not in st.session_state:
+    st.session_state.current_trends_dataset_name = ""
+
+FLOW_STEPS = ["Upload Data", "Insights", "Product Concepts"]
 
 
 # -------------------------------
@@ -207,6 +211,153 @@ THEME_FORMAT_HINTS = {
     "Perceived Waste of Money": ["Shampoo", "Tablet", "Serum"],
 }
 
+# Women-focused hair-care concept database for deterministic generation.
+WOMEN_HAIRCARE_THEME_DB = {
+    "No Visible Results After Long-Term Use": {
+        "name_stems": ["Follica", "Reviva", "Rootrise", "Antra", "Denselle", "Regaina"],
+        "consumer_profiles": [
+            "Women aged 23-40 with visible thinning around the part line after using growth products for 8-16 weeks without clear progress.",
+            "Urban working women with stress-led diffuse thinning who want measurable regrowth milestones and easy daily adherence.",
+            "Women with early-stage widening part who have already tried one or two products and now demand stronger evidence-backed efficacy.",
+        ],
+        "positioning_angles": [
+            "Outcome-tracking regimen with visible progress checkpoints by week 4, 8, and 12.",
+            "High-active yet lightweight system designed for faster perceived cosmetic density.",
+            "Clinically framed responder-focused solution for women disappointed by low-efficacy routines.",
+        ],
+        "price_tier": "premium",
+    },
+    "Rebound Hair Fall After Stopping Usage": {
+        "name_stems": ["Stabilia", "HoldRoot", "StayGrow", "Sustaina", "Anchora", "RootLock"],
+        "consumer_profiles": [
+            "Women aged 25-42 who notice renewed shedding within 2-6 weeks after discontinuing prior hair-fall treatments.",
+            "Women with cyclical hair-fall patterns seeking a taper-friendly regimen that avoids rebound after stopping.",
+            "Post-treatment users who need maintenance support to preserve gains and reduce drop-off shedding.",
+        ],
+        "positioning_angles": [
+            "Built for transition and maintenance phases to minimize rebound hair-fall after stop-use.",
+            "Retention-first formulation focused on stabilizing follicles across on/off usage cycles.",
+            "Long-horizon fall-control strategy vs short-term cosmetic fixes.",
+        ],
+        "price_tier": "mid",
+    },
+    "Product Runs Out Too Fast": {
+        "name_stems": ["LongUse", "Endura", "DailyDose", "MonthMax", "ValueFlow", "SustainDrop"],
+        "consumer_profiles": [
+            "Value-conscious women who are willing to pay for efficacy but expect 30-day minimum usage from one pack.",
+            "Routine-driven women seeking controlled-dose packaging that avoids over-dispensing and wastage.",
+            "Frequent repurchasers frustrated by products that run out too quickly relative to claims.",
+        ],
+        "positioning_angles": [
+            "Dose-optimized delivery system that stretches usage without diluting active performance.",
+            "High-efficiency format engineered for lower monthly cost-to-benefit.",
+            "Designed for complete monthly adherence with predictable consumption.",
+        ],
+        "price_tier": "value",
+    },
+    "Scalp Dryness & Irritation": {
+        "name_stems": ["Calmi", "Barriera", "DermaRoot", "SootheScalp", "Ceracalm", "HydraScalp"],
+        "consumer_profiles": [
+            "Women with sensitive scalp prone to itching, flaking, or tightness after active hair products.",
+            "Women aged 22-38 managing dryness and irritation alongside hair-fall concerns.",
+            "Users who discontinue treatments due to scalp discomfort and need a barrier-safe alternative.",
+        ],
+        "positioning_angles": [
+            "Barrier-first scalp care that combines comfort and anti-shedding support.",
+            "Low-irritation performance formula for sensitive scalp users who still need efficacy.",
+            "Dermal-comfort positioning: reduce itch and dryness while supporting fuller-looking hair.",
+        ],
+        "price_tier": "mid",
+    },
+    "Perceived Waste of Money": {
+        "name_stems": ["SmartRoot", "WorthIt", "ProofGrow", "ValueClin", "Evida", "BudgetPro"],
+        "consumer_profiles": [
+            "Price-sensitive women comparing alternatives and demanding evidence per rupee spent.",
+            "Women who felt prior solutions under-delivered and now seek transparent value-for-money claims.",
+            "First-time buyers needing affordable but credible entry products for hair-fall and thinning.",
+        ],
+        "positioning_angles": [
+            "Efficacy-per-rupee proposition with transparent active dosages and realistic timelines.",
+            "Performance-value hybrid designed to beat overpriced incumbents.",
+            "Affordable clinical logic with no-frills but high-impact actives.",
+        ],
+        "price_tier": "value",
+    },
+}
+
+WOMEN_HAIRCARE_INGREDIENT_LIBRARY = {
+    "Serum": [
+        "Redensyl",
+        "Capixyl",
+        "Procapil",
+        "Caffeine",
+        "Niacinamide",
+        "Pea Sprout Extract (AnaGain)",
+        "Copper Peptides",
+        "Biotinyl Tripeptide-1",
+        "Panthenol",
+        "Ceramide Complex",
+    ],
+    "Shampoo": [
+        "Piroctone Olamine",
+        "Salicylic Acid",
+        "Zinc PCA",
+        "Ketoconazole Alternative Complex",
+        "Tea Tree Fraction",
+        "Panthenol",
+        "Allantoin",
+        "Ceramide NP",
+        "Oat Beta-Glucan",
+    ],
+    "Tablet": [
+        "Biotin",
+        "Zinc",
+        "Vitamin D3",
+        "Iron Bisglycinate",
+        "Folic Acid",
+        "Selenium",
+        "Marine Collagen Peptides",
+        "Saw Palmetto",
+        "Ashwagandha",
+        "Pumpkin Seed Extract",
+    ],
+    "Gummy": [
+        "Biotin",
+        "Zinc",
+        "Vitamin C",
+        "Vitamin D3",
+        "Folic Acid",
+        "B12",
+        "Amla Extract",
+        "Bamboo Silica",
+    ],
+}
+
+WOMEN_HAIRCARE_FORMAT_NOTES = {
+    "Serum": "lightweight non-sticky leave-on scalp serum for nightly use",
+    "Shampoo": "sulfate-controlled cleansing base for frequent use",
+    "Tablet": "once-daily oral tablet protocol for 90-day adherence",
+    "Gummy": "easy-compliance daily gummy format with taste-masked actives",
+}
+
+WOMEN_HAIRCARE_PRICE_DB = {
+    "Serum": {"value": (599, 749, "50 ml"), "mid": (799, 999, "50 ml"), "premium": (1049, 1399, "50 ml")},
+    "Shampoo": {"value": (449, 599, "200 ml"), "mid": (649, 799, "200 ml"), "premium": (849, 1099, "200 ml")},
+    "Tablet": {"value": (499, 649, "30 tablets"), "mid": (699, 899, "30 tablets"), "premium": (949, 1199, "30 tablets")},
+    "Gummy": {"value": (549, 699, "45 gummies"), "mid": (749, 899, "45 gummies"), "premium": (949, 1149, "45 gummies")},
+}
+
+WOMEN_HAIRCARE_BENEFIT_WORDS = [
+    "Root Renewal",
+    "Density Restore",
+    "Fall Control",
+    "Scalp Comfort",
+    "Growth Support",
+    "Shed Defense",
+    "Barrier Balance",
+    "Volume Recovery",
+]
+
 INGREDIENT_BANK = {
     "regrowth": ["Caffeine", "Peptide Complex", "Niacinamide", "Redensyl"],
     "hair_fall": ["Anagain", "Amino Complex", "Saw Palmetto", "Pumpkin Seed Extract"],
@@ -318,88 +469,6 @@ def prepare_marketplace_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return normalized_df.copy()
 
 
-def build_reddit_client(client_id: str, client_secret: str, user_agent: str) -> praw.Reddit:
-    """Create a Reddit client from provided credentials."""
-    return praw.Reddit(
-        client_id=client_id,
-        client_secret=client_secret,
-        user_agent=user_agent,
-        check_for_async=False,
-    )
-
-
-def fetch_reddit_data(
-    reddit_client: praw.Reddit,
-    subreddit_name: str,
-    max_posts: int,
-    max_comments_per_post: int,
-) -> pd.DataFrame:
-    """Fetch recent posts and comments from a subreddit and return a unified dataset."""
-    three_months_ago = datetime.now(timezone.utc) - timedelta(days=90)
-    rows: List[Dict[str, object]] = []
-
-    subreddit = reddit_client.subreddit(subreddit_name)
-
-    for submission in subreddit.new(limit=max_posts):
-        created_dt = datetime.fromtimestamp(submission.created_utc, tz=timezone.utc)
-        if created_dt < three_months_ago:
-            continue
-
-        rows.append(
-            {
-                "source_type": "reddit_post",
-                "subreddit": subreddit_name,
-                "title": submission.title or "",
-                "body": submission.selftext or "",
-                "author": str(submission.author) if submission.author else "[deleted]",
-                "score": submission.score,
-                "created_utc": created_dt.isoformat(),
-                "permalink": f"https://reddit.com{submission.permalink}",
-            }
-        )
-
-        submission.comments.replace_more(limit=0)
-        for comment in submission.comments.list()[:max_comments_per_post]:
-            comment_dt = datetime.fromtimestamp(comment.created_utc, tz=timezone.utc)
-            rows.append(
-                {
-                    "source_type": "reddit_comment",
-                    "subreddit": subreddit_name,
-                    "title": submission.title or "",
-                    "body": comment.body or "",
-                    "author": str(comment.author) if comment.author else "[deleted]",
-                    "score": comment.score,
-                    "created_utc": comment_dt.isoformat(),
-                    "permalink": f"https://reddit.com{comment.permalink}",
-                }
-            )
-
-    if not rows:
-        return pd.DataFrame(
-            columns=[
-                "source_type",
-                "subreddit",
-                "title",
-                "body",
-                "author",
-                "score",
-                "created_utc",
-                "permalink",
-            ]
-        )
-
-    return pd.DataFrame(rows)
-
-
-def dataframe_to_xlsx_bytes(df: pd.DataFrame, sheet_name: str = "data") -> bytes:
-    """Convert a DataFrame to XLSX bytes for Streamlit downloads."""
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=sheet_name)
-    output.seek(0)
-    return output.getvalue()
-
-
 def build_marketplace_template_xlsx_bytes() -> bytes:
     """Create a starter XLSX template for marketplace uploads."""
     template_df = pd.DataFrame(
@@ -419,6 +488,100 @@ def build_marketplace_template_xlsx_bytes() -> bytes:
         template_df.to_excel(writer, index=False, sheet_name="template")
     output.seek(0)
     return output.getvalue()
+
+
+def read_google_trends_csv(uploaded_file) -> pd.DataFrame:
+    """Read Google Trends CSV with best-effort parsing and metadata row handling."""
+    uploaded_file.seek(0)
+    csv_bytes = uploaded_file.getvalue()
+    parse_errors: List[str] = []
+
+    for encoding in ["utf-8-sig", "utf-8", "latin-1"]:
+        for skip_rows in [0, 1, 2, 3]:
+            try:
+                df = pd.read_csv(io.BytesIO(csv_bytes), encoding=encoding, skiprows=skip_rows)
+                if df.empty or len(df.columns) < 2:
+                    continue
+                return df
+            except Exception as exc:
+                parse_errors.append(f"{encoding}/skip={skip_rows}: {exc}")
+                continue
+
+    raise ValueError(
+        "Could not parse Google Trends CSV. Please download the CSV directly from Google Trends "
+        "and upload without editing."
+    )
+
+
+def build_trends_signal_summary(trends_df: Optional[pd.DataFrame]) -> Dict[str, object]:
+    """Build search-volume summary from uploaded Google Trends CSV."""
+    if trends_df is None or trends_df.empty:
+        return {
+            "search_interest_avg": 0.0,
+            "search_data_points": 0,
+            "top_search_term": "N/A",
+        }
+
+    working = trends_df.copy()
+    numeric_cols: List[str] = []
+    for col in working.columns:
+        series = pd.to_numeric(working[col], errors="coerce")
+        if series.notna().sum() > 0:
+            working[col] = series
+            numeric_cols.append(col)
+
+    if not numeric_cols:
+        return {
+            "search_interest_avg": 0.0,
+            "search_data_points": 0,
+            "top_search_term": "N/A",
+        }
+
+    numeric_df = working[numeric_cols]
+    avg_interest = float(numeric_df.stack().mean()) if not numeric_df.empty else 0.0
+    row_means = numeric_df.mean(axis=0)
+    top_col = str(row_means.idxmax()) if not row_means.empty else "N/A"
+    data_points = int(numeric_df.count().sum())
+
+    return {
+        "search_interest_avg": round(avg_interest, 2),
+        "search_data_points": data_points,
+        "top_search_term": top_col,
+    }
+
+
+def build_dynamic_trends_explore_url(
+    pain_df: pd.DataFrame,
+    themes: List[Dict[str, object]],
+) -> str:
+    """Build a pre-filled Google Trends URL from detected hair-care pain signals."""
+    terms: List[str] = []
+    base_terms = ["women hair fall", "hair growth serum women"]
+    terms.extend(base_terms)
+
+    if themes:
+        for theme in themes[:3]:
+            label = str(theme.get("label", "")).strip()
+            if label:
+                terms.append(label.lower())
+
+    if not pain_df.empty and "pain_point" in pain_df.columns:
+        for phrase in pain_df["pain_point"].astype(str).head(5).tolist():
+            cleaned = phrase.replace("_", " ").strip().lower()
+            if cleaned:
+                terms.append(cleaned)
+
+    deduped: List[str] = []
+    seen = set()
+    for term in terms:
+        key = re.sub(r"\s+", " ", term).strip()
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(key)
+
+    selected = deduped[:5] if deduped else base_terms
+    encoded = ",".join([quote(term) for term in selected])
+    return f"https://trends.google.com/trends/explore?date=today%203-m&geo=IN&q={encoded}"
 
 
 def get_analysis_texts(df: pd.DataFrame) -> List[str]:
@@ -630,7 +793,7 @@ def build_theme_previews(texts: List[str], min_themes: int = 3, max_themes: int 
 
             bucket = theme_buckets[rule["title"]]
             bucket["mentions"] += 1
-            if len(bucket["quotes"]) < 2:
+            if len(bucket["quotes"]) < 5:
                 quote = sentence.strip()
                 if len(quote) > 200:
                     quote = f"{quote[:197]}..."
@@ -654,28 +817,33 @@ def build_theme_previews(texts: List[str], min_themes: int = 3, max_themes: int 
     return themes[:max_themes]
 
 
-def build_data_signal_summary(df: pd.DataFrame) -> Dict[str, float]:
+def build_data_signal_summary(
+    df: pd.DataFrame,
+    trends_df: Optional[pd.DataFrame] = None,
+) -> Dict[str, object]:
     """Compute lightweight source signals for concept scoring and citations."""
     normalized_df = normalize_columns(df)
     total_rows = len(normalized_df)
-
-    if "source_type" in normalized_df.columns:
-        forum_mentions = int(normalized_df["source_type"].astype(str).str.contains("reddit").sum())
-        review_mentions = max(total_rows - forum_mentions, 0)
-    else:
-        forum_mentions = 0
-        review_mentions = total_rows
-
-    search_interest_avg = 0.0
-    if "search interest" in normalized_df.columns:
-        search_interest_avg = float(
-            pd.to_numeric(normalized_df["search interest"], errors="coerce").fillna(0).mean()
+    forum_mentions = 0
+    review_mentions = total_rows
+    if {"title", "body"}.issubset(set(normalized_df.columns)):
+        combined = (
+            normalized_df["title"].fillna("").astype(str).str.lower()
+            + " "
+            + normalized_df["body"].fillna("").astype(str).str.lower()
         )
+        forum_pattern = r"\b(reddit|subreddit|r\/[a-z0-9_]+|forum|thread|op)\b"
+        forum_mentions = int(combined.str.contains(forum_pattern, regex=True).sum())
+        review_mentions = max(total_rows - forum_mentions, 0)
+
+    trends_summary = build_trends_signal_summary(trends_df)
 
     return {
         "review_mentions": float(review_mentions),
         "forum_mentions": float(forum_mentions),
-        "search_interest_avg": round(search_interest_avg, 2),
+        "search_interest_avg": float(trends_summary["search_interest_avg"]),
+        "search_data_points": int(trends_summary["search_data_points"]),
+        "top_search_term": str(trends_summary["top_search_term"]),
     }
 
 
@@ -907,28 +1075,121 @@ def build_positioning(theme_label: str, format_name: str, top_pain_phrase: str) 
     )
 
 
-def build_dynamic_concept_blueprint(
-    theme: Dict[str, object],
-    top_pain_phrase: str,
-    concept_index: int,
-    signals: Dict[str, float],
-) -> Dict[str, object]:
-    """Construct one concept brief dynamically from current data signals."""
-    theme_label = str(theme["label"])
-    format_name = choose_formats_for_theme(theme_label, concept_index)
-    tags = infer_theme_tags(theme_label, top_pain_phrase)
-    name_core = safe_title_fragment(top_pain_phrase, fallback="Relief")
-    product_name = f"{name_core} {format_name}"
+def get_theme_db_profile(theme_label: str) -> Dict[str, object]:
+    """Return deterministic theme profile for women hair-care."""
+    return WOMEN_HAIRCARE_THEME_DB.get(
+        theme_label,
+        {
+            "name_stems": ["RootCare", "HairSense", "GrowWell"],
+            "consumer_profiles": [
+                "Women with recurring hair-fall and scalp discomfort seeking reliable, easy-to-follow outcomes."
+            ],
+            "positioning_angles": [
+                "Evidence-first women hair-care proposition with practical daily use."
+            ],
+            "price_tier": "mid",
+        },
+    )
 
-    return {
-        "name": product_name,
-        "format": format_name,
-        "target_consumer": build_target_profile(theme_label, top_pain_phrase),
-        "ingredients": build_ingredient_direction(tags, format_name),
-        "price_point": build_price_point(format_name, signals, int(theme.get("mentions", 0))),
-        "positioning": build_positioning(theme_label, format_name, top_pain_phrase),
-        "capabilities": capabilities_for_format(format_name),
-    }
+
+def build_deterministic_product_name(
+    theme_label: str,
+    format_name: str,
+    focus_phrase: str,
+    concept_index: int,
+) -> str:
+    """Build brandable deterministic product name for women hair-care."""
+    profile = get_theme_db_profile(theme_label)
+    stems = list(profile.get("name_stems", [])) or ["RootCare"]
+    stem = stems[concept_index % len(stems)]
+    benefit = WOMEN_HAIRCARE_BENEFIT_WORDS[concept_index % len(WOMEN_HAIRCARE_BENEFIT_WORDS)]
+    return f"{stem} {benefit} {format_name}"
+
+
+def build_deterministic_target_profile(
+    theme_label: str,
+    focus_phrase: str,
+    concept_index: int,
+) -> str:
+    """Build detailed women-focused target consumer profile."""
+    profile = get_theme_db_profile(theme_label)
+    profiles = list(profile.get("consumer_profiles", [])) or [
+        "Women with persistent hair-fall concerns seeking a practical and effective routine."
+    ]
+    base_profile = profiles[concept_index % len(profiles)]
+    return f"{base_profile} Primary complaint observed: {focus_phrase}."
+
+
+def select_ingredients_for_theme_and_format(
+    theme_label: str,
+    format_name: str,
+    concept_index: int,
+) -> List[str]:
+    """Pick ingredient stack from women hair-care library with theme emphasis."""
+    library = WOMEN_HAIRCARE_INGREDIENT_LIBRARY.get(format_name, WOMEN_HAIRCARE_INGREDIENT_LIBRARY["Serum"])
+    start = concept_index % max(1, len(library))
+    rotated = library[start:] + library[:start]
+    selected = rotated[:4]
+
+    lower_theme = theme_label.lower()
+    if "dryness" in lower_theme or "irritation" in lower_theme:
+        priority = ["Ceramide Complex", "Panthenol", "Allantoin", "Oat Beta-Glucan"]
+        for ingredient in reversed(priority):
+            if ingredient in library and ingredient not in selected:
+                selected[-1] = ingredient
+    if "rebound" in lower_theme or "hair fall" in lower_theme:
+        priority = ["Pea Sprout Extract (AnaGain)", "Saw Palmetto", "Pumpkin Seed Extract", "Redensyl"]
+        for ingredient in reversed(priority):
+            if ingredient in library and ingredient not in selected:
+                selected[0] = ingredient
+    return selected
+
+
+def build_deterministic_ingredient_direction(
+    theme_label: str,
+    format_name: str,
+    concept_index: int,
+) -> str:
+    """Build detailed ingredient + formulation direction for deterministic mode."""
+    selected = select_ingredients_for_theme_and_format(theme_label, format_name, concept_index)
+    format_note = WOMEN_HAIRCARE_FORMAT_NOTES.get(format_name, "daily women hair-care format")
+    return f"{' + '.join(selected)}; {format_note}; free from heavy residue and optimized for women scalp compatibility."
+
+
+def build_deterministic_price_point(
+    theme_label: str,
+    format_name: str,
+    signals: Dict[str, float],
+    theme_mentions: int,
+    concept_index: int,
+) -> str:
+    """Build price point from women hair-care tier matrix."""
+    profile = get_theme_db_profile(theme_label)
+    tier = str(profile.get("price_tier", "mid"))
+    format_prices = WOMEN_HAIRCARE_PRICE_DB.get(format_name, WOMEN_HAIRCARE_PRICE_DB["Serum"])
+    low, high, pack = format_prices.get(tier, format_prices["mid"])
+    demand_bump = int(min(80, (signals["search_interest_avg"] * 0.6) + (theme_mentions * 1.5)))
+    span = max(1, high - low)
+    stepped = low + ((concept_index * 37) % span)
+    price = min(high, stepped + demand_bump)
+    rounded_price = int(round(price / 10.0) * 10)
+    return f"INR {rounded_price} for {pack}"
+
+
+def build_deterministic_positioning(
+    theme_label: str,
+    format_name: str,
+    focus_phrase: str,
+    concept_index: int,
+) -> str:
+    """Build clear competitive positioning for deterministic mode."""
+    profile = get_theme_db_profile(theme_label)
+    angles = list(profile.get("positioning_angles", [])) or ["Evidence-led women hair-care differentiation."]
+    angle = angles[concept_index % len(angles)]
+    return (
+        f"{angle} Positioned as a {format_name.lower()} built for women facing '{focus_phrase}', "
+        "with stronger value clarity and lower drop-off risk than generic alternatives."
+    )
 
 
 @st.cache_resource(show_spinner=False)
@@ -947,109 +1208,6 @@ def get_transformers_text2text_pipeline(model_id: str, local_files_only: bool = 
             return {"tokenizer": tokenizer, "model": model, "kind": "causal"}, ""
     except Exception as exc:
         return None, str(exc)
-
-
-def parse_refinement_fields(text: str) -> Dict[str, str]:
-    """Parse key/value fields from flexible model output formats."""
-    fields = {
-        "product_name": "",
-        "format": "",
-        "target_consumer": "",
-        "ingredients": "",
-        "price_point": "",
-        "positioning": "",
-    }
-
-    # 1) Try JSON object first.
-    json_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if json_match:
-        try:
-            obj = json.loads(json_match.group(0))
-            if isinstance(obj, dict):
-                for key in fields:
-                    value = clean_generated_field_value(key, str(obj.get(key, "")))
-                    if value:
-                        fields[key] = value
-        except Exception:
-            pass
-
-    # 2) Flexible line parsing with common aliases.
-    aliases = {
-        "product_name": {"product_name", "name", "product", "concept_name"},
-        "format": {"format", "product_format", "type"},
-        "target_consumer": {"target_consumer", "consumer", "target", "target_profile", "audience"},
-        "ingredients": {"ingredients", "formulation", "ingredient_direction", "formula"},
-        "price_point": {"price_point", "price", "pricing", "mrp"},
-        "positioning": {"positioning", "competitive_positioning", "value_proposition", "position"},
-    }
-    for raw_line in text.splitlines():
-        line = raw_line.strip().lstrip("-*").strip()
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        key_norm = re.sub(r"[^a-z_ ]", "", key.lower()).replace(" ", "_").strip("_")
-        value = value.strip()
-        if not value:
-            continue
-        for canonical_key, alias_set in aliases.items():
-            if key_norm in alias_set:
-                fields[canonical_key] = clean_generated_field_value(canonical_key, value)
-                break
-
-    # 3) Fallback: if still mostly empty, use generated text as positioning.
-    filled = sum(bool(v.strip()) for v in fields.values())
-    if filled == 0:
-        compact_text = " ".join(text.split())
-        if compact_text:
-            fields["positioning"] = compact_text[:220]
-
-    return fields
-
-
-def extract_json_array(text: str) -> Optional[List[Dict[str, object]]]:
-    """Extract JSON array of objects from noisy model output."""
-    cleaned = text.strip()
-    cleaned = re.sub(r"```(?:json)?", "", cleaned, flags=re.IGNORECASE).replace("```", "").strip()
-
-    # Try direct parse first.
-    try:
-        obj = json.loads(cleaned)
-        if isinstance(obj, list):
-            return [item for item in obj if isinstance(item, dict)]
-    except Exception:
-        pass
-
-    # Try to extract the first array block.
-    match = re.search(r"\[[\s\S]*\]", cleaned)
-    if match:
-        block = match.group(0).strip()
-        # Normalize common invalid JSON patterns.
-        block = block.replace("\n", " ").replace("\r", " ")
-        block = re.sub(r",\s*([}\]])", r"\1", block)  # trailing commas
-        # single quotes -> double quotes (best effort)
-        block = re.sub(r"(?<!\\)'", '"', block)
-        try:
-            arr = json.loads(block)
-            if isinstance(arr, list):
-                return [item for item in arr if isinstance(item, dict)]
-        except Exception:
-            pass
-
-    # Fallback: parse object blocks and wrap as list.
-    object_matches = re.findall(r"\{[\s\S]*?\}", cleaned)
-    parsed_objects: List[Dict[str, object]] = []
-    for obj_text in object_matches:
-        candidate = re.sub(r",\s*([}\]])", r"\1", obj_text)
-        candidate = re.sub(r"(?<!\\)'", '"', candidate)
-        try:
-            parsed = json.loads(candidate)
-            if isinstance(parsed, dict):
-                parsed_objects.append(parsed)
-        except Exception:
-            continue
-    if parsed_objects:
-        return parsed_objects
-    return None
 
 
 def generate_with_local_model(
@@ -1139,86 +1297,6 @@ Context:
     return line, "ok"
 
 
-def refine_concept_with_local_llm(
-    concept: Dict[str, object],
-    evidence: str,
-    use_local_llm: bool,
-    llm_model: str,
-    local_files_only: bool = False,
-) -> Tuple[Dict[str, object], bool, str]:
-    """Optionally refine concept brief language using a local transformers model."""
-    if not use_local_llm:
-        return concept, False, "disabled"
-
-    text2text = get_transformers_text2text_pipeline(
-        model_id=llm_model,
-        local_files_only=local_files_only,
-    )
-    pipeline_obj, load_error = text2text
-    if pipeline_obj is None:
-        return concept, False, f"model_load_failed: {load_error[:120]}"
-
-    prompt = f"""
-You are a product strategist. Rewrite this concept brief clearly for consumer products.
-Keep facts consistent with evidence. Keep concise and practical.
-Return ONLY these 4 lines:
-product_name: ...
-target_consumer: ...
-ingredients: ...
-positioning: ...
-
-INPUT:
-product_name: {concept.get("name")}
-format: {concept.get("format")}
-target_consumer: {concept.get("target_consumer")}
-ingredients: {concept.get("ingredients")}
-positioning: {concept.get("positioning")}
-evidence: {evidence}
-"""
-    try:
-        tokenizer = pipeline_obj["tokenizer"]
-        model = pipeline_obj["model"]
-        kind = pipeline_obj["kind"]
-
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=160,
-            do_sample=False,
-        )
-        decoded = tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
-        if kind == "causal" and decoded.startswith(prompt.strip()):
-            response_text = decoded[len(prompt.strip()) :].strip()
-        else:
-            response_text = decoded
-    except Exception:
-        return concept, False, "generation_failed"
-
-    parsed = parse_refinement_fields(response_text)
-    if not any(v.strip() for v in parsed.values()):
-        return concept, False, "parse_failed"
-
-    refined = concept.copy()
-    before_snapshot = (
-        str(refined.get("name", "")),
-        str(refined.get("target_consumer", "")),
-        str(refined.get("ingredients", "")),
-        str(refined.get("positioning", "")),
-    )
-    refined["name"] = parsed.get("product_name", refined["name"])
-    refined["target_consumer"] = parsed.get("target_consumer", refined["target_consumer"])
-    refined["ingredients"] = parsed.get("ingredients", refined["ingredients"])
-    refined["positioning"] = parsed.get("positioning", refined["positioning"])
-    after_snapshot = (
-        str(refined.get("name", "")),
-        str(refined.get("target_consumer", "")),
-        str(refined.get("ingredients", "")),
-        str(refined.get("positioning", "")),
-    )
-    changed = before_snapshot != after_snapshot
-    return refined, changed, "ok" if changed else "no_change"
-
-
 def score_concept(
     concept: Dict[str, object],
     theme_mentions: int,
@@ -1260,22 +1338,226 @@ def score_concept(
     }
 
 
-def build_concept_evidence(theme: Dict[str, object], signals: Dict[str, float]) -> str:
+def build_concept_evidence(theme: Dict[str, object], signals: Dict[str, object]) -> str:
     """Build short citation text from available consumer data signals."""
     quotes = theme.get("quotes", [])
+    theme_mentions = int(theme.get("mentions", 0))
+    theme_forum_mentions = int(min(theme_mentions, int(signals.get("forum_mentions", 0))))
     quote_parts = []
     for idx, quote in enumerate(quotes[:2], start=1):
         quote_parts.append(f'Q{idx}: "{quote}"')
     quote_text = " | ".join(quote_parts) if quote_parts else "No direct quotes available."
 
     return (
-        f"Mentions in uploaded data: {theme.get('mentions', 0)}; "
-        f"Review mentions: {int(signals['review_mentions'])}; "
-        f"Forum mentions: {int(signals['forum_mentions'])}; "
-        f"Search interest avg: {signals['search_interest_avg']}."
+        f"Mentions in uploaded data: {theme_mentions}; "
+        f"Review mentions: {theme_mentions}; "
+        f"Forum mentions: {theme_forum_mentions}; "
+        f"Search interest avg: {signals['search_interest_avg']}; "
+        f"Search data points: {int(signals.get('search_data_points', 0))}; "
+        f"Top search term: {signals.get('top_search_term', 'N/A')}."
         f" {quote_text}"
     )
 
+
+def parse_quotes_from_evidence(evidence: str) -> List[str]:
+    """Extract Q1/Q2 style quotes from evidence text."""
+    if not evidence:
+        return []
+    return re.findall(r'Q\d+:\s*"([^"]+)"', evidence)
+
+
+def normalize_ingredient_terms(ingredients_text: str) -> set:
+    """Normalize ingredient terms for novelty overlap scoring."""
+    prefix = str(ingredients_text).split(";", 1)[0]
+    terms = re.split(r"\+|,|/| and ", prefix, flags=re.IGNORECASE)
+    normalized = {re.sub(r"[^a-z0-9 ]", "", term.lower()).strip() for term in terms}
+    return {term for term in normalized if term}
+
+
+def compute_novelty_scores(concepts_df: pd.DataFrame) -> List[float]:
+    """Compute novelty score based on ingredient overlap and theme uniqueness."""
+    if concepts_df.empty:
+        return []
+    ingredient_sets = [normalize_ingredient_terms(val) for val in concepts_df["ingredients"].astype(str)]
+    theme_counts = concepts_df["theme"].value_counts().to_dict() if "theme" in concepts_df.columns else {}
+    novelty_scores: List[float] = []
+
+    for idx, this_set in enumerate(ingredient_sets):
+        max_overlap = 0.0
+        for jdx, other_set in enumerate(ingredient_sets):
+            if idx == jdx:
+                continue
+            union = len(this_set.union(other_set))
+            if union == 0:
+                continue
+            overlap = len(this_set.intersection(other_set)) / union
+            max_overlap = max(max_overlap, overlap)
+        base_novelty = 100.0 * (1.0 - max_overlap)
+        theme = str(concepts_df.iloc[idx].get("theme", ""))
+        theme_bonus = 8.0 if theme_counts.get(theme, 0) <= 2 else 0.0
+        novelty_scores.append(round(clamp_score(base_novelty + theme_bonus), 1))
+    return novelty_scores
+
+
+def minmax_to_100(values: List[float]) -> List[float]:
+    """Scale values to [0,100] with stable handling for flat lists."""
+    if not values:
+        return []
+    vmin = min(values)
+    vmax = max(values)
+    if vmax == vmin:
+        return [50.0 for _ in values]
+    return [round(((val - vmin) / (vmax - vmin)) * 100.0, 1) for val in values]
+
+
+def enrich_opportunity_scores(concepts_df: pd.DataFrame) -> pd.DataFrame:
+    """Add demand/competition/novelty/opportunity score columns."""
+    if concepts_df.empty:
+        return concepts_df
+    enriched = concepts_df.copy()
+    for col in ["review_mentions", "forum_mentions", "search_interest_avg", "competition_intensity"]:
+        if col not in enriched.columns:
+            enriched[col] = 0
+
+    demand_raw = (
+        enriched["review_mentions"].astype(float) * 1.0
+        + enriched["forum_mentions"].astype(float) * 1.2
+        + enriched["search_interest_avg"].astype(float) * 2.5
+    ).tolist()
+    demand_component = minmax_to_100(demand_raw)
+    competition_advantage = [
+        round(clamp_score(100.0 - float(val)), 1) for val in enriched["competition_intensity"].tolist()
+    ]
+    novelty_component = compute_novelty_scores(enriched)
+    opportunity_scores = []
+    for idx in range(len(enriched)):
+        score = (
+            0.5 * demand_component[idx]
+            + 0.25 * competition_advantage[idx]
+            + 0.25 * novelty_component[idx]
+        )
+        opportunity_scores.append(round(clamp_score(score), 1))
+
+    enriched["demand_component"] = demand_component
+    enriched["competition_component"] = competition_advantage
+    enriched["novelty_component"] = novelty_component
+    enriched["opportunity_score"] = opportunity_scores
+    return enriched
+
+
+def build_why_win_bullets(row: Dict[str, object]) -> List[str]:
+    """Create concise decision bullets from score and evidence."""
+    bullets = []
+    bullets.append(
+        f"Strong demand signal: {int(row.get('review_mentions', 0))} reviews, "
+        f"{int(row.get('forum_mentions', 0))} forum mentions."
+    )
+    bullets.append(
+        f"Search traction: avg interest {row.get('search_interest_avg', 0)}"
+        f" (top term: {row.get('top_search_term', 'N/A')})."
+    )
+    bullets.append(
+        f"Novelty {row.get('novelty_component', 0):.1f}/100 with pain-theme fit on "
+        f"'{row.get('theme', 'Consumer Pain')}'."
+    )
+    return bullets
+
+
+def split_profile_bullets(target_consumer: str) -> List[str]:
+    """Split target consumer text into up to 3 readable bullets."""
+    chunks = re.split(r"[.;]", str(target_consumer))
+    cleaned = [chunk.strip() for chunk in chunks if chunk.strip()]
+    if len(cleaned) >= 3:
+        return cleaned[:3]
+    if len(cleaned) == 2:
+        return cleaned + ["Needs an easy, evidence-backed routine with visible milestones."]
+    if len(cleaned) == 1:
+        return [
+            cleaned[0],
+            "Wants high-confidence outcomes without complicated regimen changes.",
+            "Prefers clear value-for-money and transparent claim boundaries.",
+        ]
+    return [
+        "Women with persistent hair-care pain points.",
+        "Needs reliable and practical outcomes.",
+        "Looks for strong value and evidence clarity.",
+    ]
+
+
+def get_usage_and_claims(format_name: str) -> List[str]:
+    """Return usage and claim boundary notes by format."""
+    notes = {
+        "Serum": [
+            "Daily leave-on scalp serum; 1 ml nightly on thinning zones.",
+            "Best positioned for progressive visible density support over 8-12 weeks.",
+            "Avoid over-claiming regrowth speed; position as consistent routine support.",
+        ],
+        "Shampoo": [
+            "Rinse-off scalp shampoo; 3-4 uses/week with 2-minute contact time.",
+            "Best for comfort, flake control, and improving scalp environment.",
+            "Avoid claiming standalone regrowth; frame as scalp-foundation support.",
+        ],
+        "Tablet": [
+            "Once-daily oral tablet with food; 90-day protocol.",
+            "Best for internal nutrition support in thinning and shedding patterns.",
+            "Avoid treatment claims; position as nutritional support with consistency.",
+        ],
+        "Gummy": [
+            "Daily chewable supplement; 1-2 gummies/day.",
+            "Best for adherence and routine consistency among first-time users.",
+            "Avoid curative claims; position as habit-friendly nutrition support.",
+        ],
+    }
+    return notes.get(format_name, notes["Serum"])
+
+
+def build_formulation_rationale(ingredients_text: str, theme: str) -> List[str]:
+    """Create rationale bullets from ingredient stack and pain theme."""
+    terms = list(normalize_ingredient_terms(ingredients_text))[:4]
+    term_display = ", ".join([term.title() for term in terms]) if terms else "Selected active blend"
+    return [
+        f"Primary actives: {term_display}.",
+        f"Selected to address '{theme}' with multi-pathway support (follicle/scalp/barrier).",
+        "Keep sensory profile light and non-greasy to improve adherence and repeat usage.",
+    ]
+
+
+def build_risk_assumptions(row: Dict[str, object]) -> List[str]:
+    """Generate concise risks and assumptions list."""
+    return [
+        "Perceived efficacy may vary by baseline severity and adherence quality.",
+        f"Competition is {'high' if float(row.get('competition_intensity', 70)) > 75 else 'moderate'} in this format; differentiation must stay clear.",
+        "Claims must be tightly aligned to substantiation and local regulatory boundaries.",
+    ]
+
+
+def build_next_experiments(row: Dict[str, object]) -> List[str]:
+    """Generate practical next-step experiments."""
+    return [
+        f"Landing-page A/B test for '{row.get('theme', 'pain theme')}' messaging and CTR-to-add-to-cart.",
+        "Rapid bench feasibility check for active stability + texture + fragrance tolerance.",
+        "Claim substantiation pilot: 8-12 week user study with before/after and drop-off tracking.",
+    ]
+
+
+def get_trend_series(trends_df: Optional[pd.DataFrame], preferred_term: str) -> Optional[pd.Series]:
+    """Extract a numeric trend series for sparkline display."""
+    if trends_df is None or trends_df.empty:
+        return None
+    working = trends_df.copy()
+    numeric_cols = []
+    for col in working.columns:
+        converted = pd.to_numeric(working[col], errors="coerce")
+        if converted.notna().sum() > 0:
+            working[col] = converted
+            numeric_cols.append(col)
+    if not numeric_cols:
+        return None
+    if preferred_term in numeric_cols:
+        series = working[preferred_term].dropna()
+        return series if not series.empty else None
+    series = working[numeric_cols[0]].dropna()
+    return series if not series.empty else None
 
 def infer_target_concept_count(theme_count: int) -> int:
     """Infer concept count in [8, 10] from number of detected pain themes."""
@@ -1289,29 +1571,28 @@ def generate_product_concepts(
     themes: List[Dict[str, object]],
     pain_df: pd.DataFrame,
     data_df: pd.DataFrame,
+    trends_df: Optional[pd.DataFrame],
     selected_capabilities: set,
     use_local_llm: bool = False,
     llm_model: str = "google/flan-t5-base",
     local_files_only: bool = False,
     min_concepts: int = 5,
     max_concepts: int = 10,
+    concept_index_seed: int = 0,
 ) -> pd.DataFrame:
-    """Generate concept briefs from pain themes using LLM only."""
-    if not themes or not use_local_llm:
+    """Generate concept briefs from pain themes using LLM or deterministic mode."""
+    if not themes:
         df = pd.DataFrame()
         df.attrs["llm_attempted_count"] = 0
         df.attrs["llm_generated_count"] = 0
-        df.attrs["llm_failure_reasons"] = {"llm_required": 1}
+        df.attrs["llm_failure_reasons"] = {"no_themes": 1}
         return df
 
-    signals = build_data_signal_summary(data_df)
+    signals = build_data_signal_summary(data_df, trends_df=trends_df)
     concepts: List[Dict[str, object]] = []
     llm_attempted_count = 0
     llm_generated_count = 0
     llm_failure_reasons: Counter = Counter()
-
-    # Deterministic concept-construction path intentionally disabled per request.
-    # The app now uses LLM-only concept brief generation.
 
     target_briefs = max(1, int(max_concepts))
 
@@ -1326,6 +1607,95 @@ def generate_product_concepts(
     base_per_theme = target_briefs // theme_count
     remainder = target_briefs % theme_count
     per_theme_targets = [base_per_theme + (1 if i < remainder else 0) for i in range(theme_count)]
+
+    if not use_local_llm:
+        deterministic_counter = int(concept_index_seed)
+        for theme_idx, theme in enumerate(themes):
+            theme_label = str(theme.get("label", "Consumer Pain"))
+            theme_mentions = int(theme.get("mentions", 0))
+            theme_quotes = theme.get("quotes", [])
+            theme_phrase_pool: List[str] = []
+
+            if not pain_df.empty:
+                for _, row in pain_df.iterrows():
+                    phrase = str(row.get("pain_point", "")).strip()
+                    if phrase and phrase.lower() in " ".join(theme_quotes).lower():
+                        theme_phrase_pool.append(phrase)
+            if not theme_phrase_pool:
+                theme_phrase_pool = [safe_title_fragment(theme_label, fallback="pain").lower()]
+
+            theme_target = max(1, per_theme_targets[theme_idx])
+            for idx in range(theme_target):
+                deterministic_counter += 1
+                focus_phrase = theme_phrase_pool[idx % len(theme_phrase_pool)]
+                format_name = choose_formats_for_theme(theme_label, idx)
+                product_name = build_deterministic_product_name(
+                    theme_label=theme_label,
+                    format_name=format_name,
+                    focus_phrase=focus_phrase,
+                    concept_index=deterministic_counter,
+                )
+                concept_obj = {
+                    "name": product_name,
+                    "format": format_name,
+                    "target_consumer": build_deterministic_target_profile(
+                        theme_label=theme_label,
+                        focus_phrase=focus_phrase,
+                        concept_index=deterministic_counter,
+                    ),
+                    "ingredients": build_deterministic_ingredient_direction(
+                        theme_label=theme_label,
+                        format_name=format_name,
+                        concept_index=deterministic_counter,
+                    ),
+                    "price_point": build_deterministic_price_point(
+                        theme_label=theme_label,
+                        format_name=format_name,
+                        signals=signals,
+                        theme_mentions=theme_mentions,
+                        concept_index=deterministic_counter,
+                    ),
+                    "positioning": build_deterministic_positioning(
+                        theme_label=theme_label,
+                        format_name=format_name,
+                        focus_phrase=focus_phrase,
+                        concept_index=deterministic_counter,
+                    ),
+                    "capabilities": capabilities_for_format(format_name),
+                }
+                evidence_text = build_concept_evidence(theme, signals)
+                scores = score_concept(
+                    concept=concept_obj,
+                    theme_mentions=theme_mentions,
+                    signals=signals,
+                    selected_capabilities=selected_capabilities,
+                )
+                concepts.append(
+                    {
+                        "theme": theme_label,
+                        "product_name": concept_obj["name"],
+                        "format": concept_obj["format"],
+                        "target_consumer": concept_obj["target_consumer"],
+                        "ingredients": concept_obj["ingredients"],
+                        "price_point": concept_obj["price_point"],
+                        "positioning": concept_obj["positioning"],
+                        "evidence": evidence_text,
+                        "review_mentions": int(theme_mentions),
+                        "forum_mentions": int(min(theme_mentions, int(signals["forum_mentions"]))),
+                        "search_interest_avg": float(signals["search_interest_avg"]),
+                        "search_data_points": int(signals.get("search_data_points", 0)),
+                        "top_search_term": str(signals.get("top_search_term", "N/A")),
+                        "theme_quotes": list(theme.get("quotes", [])),
+                        **scores,
+                    }
+                )
+        concepts_df = pd.DataFrame(concepts)
+        concepts_df = concepts_df.sort_values(by="overall_score", ascending=False).reset_index(drop=True)
+        concepts_df = concepts_df.head(min(target_briefs, len(concepts_df))).copy()
+        concepts_df.attrs["llm_attempted_count"] = 0
+        concepts_df.attrs["llm_generated_count"] = len(concepts_df)
+        concepts_df.attrs["llm_failure_reasons"] = {}
+        return concepts_df
 
     for theme_idx, theme in enumerate(themes):
         if llm_generated_count >= target_briefs:
@@ -1480,6 +1850,12 @@ def generate_product_concepts(
                         "price_point": concept_obj["price_point"],
                         "positioning": concept_obj["positioning"],
                         "evidence": evidence_text,
+                        "review_mentions": int(theme_mentions),
+                        "forum_mentions": int(min(theme_mentions, int(signals["forum_mentions"]))),
+                        "search_interest_avg": float(signals["search_interest_avg"]),
+                        "search_data_points": int(signals.get("search_data_points", 0)),
+                        "top_search_term": str(signals.get("top_search_term", "N/A")),
+                        "theme_quotes": list(theme.get("quotes", [])),
                         **scores,
                     }
                 )
@@ -1559,6 +1935,12 @@ def generate_product_concepts(
                             "positioning": fallback_concept["positioning"],
                             "evidence": evidence_text,
                             "generation_warning": warning_text,
+                            "review_mentions": int(theme_mentions),
+                            "forum_mentions": int(min(theme_mentions, int(signals["forum_mentions"]))),
+                            "search_interest_avg": float(signals["search_interest_avg"]),
+                            "search_data_points": int(signals.get("search_data_points", 0)),
+                            "top_search_term": str(signals.get("top_search_term", "N/A")),
+                            "theme_quotes": list(theme.get("quotes", [])),
                             **scores,
                         }
                     )
@@ -1594,18 +1976,11 @@ def generate_product_concepts(
 
 
 # -------------------------------
-# Top navigation
+# Forward journey header
 # -------------------------------
-sections = ["Upload Data", "Insights", "Product Concepts"]
-current_index = sections.index(st.session_state.active_tab)
-selected_section = st.radio(
-    "Sections",
-    options=sections,
-    index=current_index,
-    horizontal=True,
-)
-if selected_section != st.session_state.active_tab:
-    st.session_state.active_tab = selected_section
+current_index = FLOW_STEPS.index(st.session_state.active_tab)
+st.caption(f"Journey: {' -> '.join(FLOW_STEPS)}")
+st.progress((current_index + 1) / len(FLOW_STEPS))
 
 
 # -------------------------------
@@ -1613,154 +1988,45 @@ if selected_section != st.session_state.active_tab:
 # -------------------------------
 if st.session_state.active_tab == "Upload Data":
     st.subheader("Import Data")
-    st.write("Choose one source to import data.")
-
-    selected_source = st.radio(
-        "Data source",
-        options=["Reddit", "Marketplace (Amazon/Nykaa/Flipkart etc.)"],
-        horizontal=True,
+    st.write("Upload marketplace data as XLSX.")
+    st.markdown("### Marketplace (Amazon/Nykaa/Flipkart etc.)")
+    st.write("Upload one XLSX file with exactly two columns: `Title` and `Body`.")
+    st.download_button(
+        label="Download Marketplace XLSX Template",
+        data=build_marketplace_template_xlsx_bytes(),
+        file_name="marketplace_reviews_template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Use this template format: exactly two columns, Title and Body.",
     )
 
-    if selected_source == "Reddit":
-        st.markdown("### Reddit")
-        st.write(
-            "Enter a subreddit name and fetch posts + comments from the last 3 months "
-            "(or as many as Reddit API allows)."
-        )
+    uploaded_file = st.file_uploader(
+        "Choose XLSX file",
+        type=["xlsx"],
+        accept_multiple_files=False,
+        help="Required columns: Title and Body only.",
+    )
 
-        default_client_id = st.secrets.get("REDDIT_CLIENT_ID", "")
-        default_client_secret = st.secrets.get("REDDIT_CLIENT_SECRET", "")
-        default_user_agent = st.secrets.get(
-            "REDDIT_USER_AGENT", "ai-product-inventor-app/0.1 by streamlit-user"
-        )
-
-        subreddit_name = st.text_input("Subreddit name (without r/)", value="entrepreneur")
-        max_posts = st.number_input(
-            "Max posts to fetch",
-            min_value=10,
-            max_value=1000,
-            value=200,
-            step=10,
-            help="API limits and subreddit activity affect final result count.",
-        )
-        max_comments_per_post = st.number_input(
-            "Max comments per post",
-            min_value=10,
-            max_value=500,
-            value=100,
-            step=10,
-        )
-
-        if default_client_id and default_client_secret:
-            st.caption("Using Reddit credentials from Streamlit secrets.")
-            client_id = default_client_id
-            client_secret = default_client_secret
-            user_agent = default_user_agent
-        else:
-            st.warning(
-                "Reddit API credentials are not configured in secrets. "
-                "Please enter them below."
-            )
-            client_id = st.text_input("Reddit Client ID")
-            client_secret = st.text_input("Reddit Client Secret", type="password")
-            user_agent = st.text_input(
-                "Reddit User Agent", value="ai-product-inventor-app/0.1 by streamlit-user"
-            )
-
-        if st.button("Fetch Reddit Data", type="primary"):
-            if not subreddit_name.strip():
-                st.error("Please enter a subreddit name (example: entrepreneur).")
-            elif not client_id.strip() or not client_secret.strip() or not user_agent.strip():
+    if not uploaded_file:
+        st.info("No XLSX uploaded yet. Please upload a file with Title and Body columns.")
+    else:
+        with st.expander(f"File: {uploaded_file.name}", expanded=True):
+            try:
+                df = read_xlsx_file(uploaded_file)
+                prepared_df = prepare_marketplace_dataframe(df)
+                st.session_state.current_dataset = prepared_df.copy()
+                st.session_state.current_dataset_name = uploaded_file.name
+                render_dataset_summary_block(prepared_df)
+                st.success("Dataset ready for Insights.")
+            except pd.errors.EmptyDataError:
+                st.error("This XLSX file is empty or invalid. Please upload a valid file with headers.")
+            except ValueError as exc:
+                st.error(str(exc))
+            except Exception as exc:
                 st.error(
-                    "Reddit credentials are required. Provide Client ID, Client Secret, and User Agent."
+                    "Could not read this XLSX file. Please upload a valid .xlsx file "
+                    "using the provided template format. "
+                    f"Technical detail: {exc}"
                 )
-            else:
-                try:
-                    with st.spinner("Fetching subreddit posts and comments..."):
-                        reddit_client = build_reddit_client(
-                            client_id=client_id.strip(),
-                            client_secret=client_secret.strip(),
-                            user_agent=user_agent.strip(),
-                        )
-                        reddit_df = fetch_reddit_data(
-                            reddit_client=reddit_client,
-                            subreddit_name=subreddit_name.strip(),
-                            max_posts=int(max_posts),
-                            max_comments_per_post=int(max_comments_per_post),
-                        )
-
-                    if reddit_df.empty:
-                        st.warning(
-                            "No recent Reddit data was found in the last 3 months, "
-                            "or API access was limited."
-                        )
-                    else:
-                        st.session_state.current_dataset = reddit_df.copy()
-                        st.session_state.current_dataset_name = f"reddit_r_{subreddit_name.strip()}"
-                        with st.expander(
-                            f"Reddit dataset: r/{subreddit_name.strip()}",
-                            expanded=True,
-                        ):
-                            render_dataset_summary_block(reddit_df)
-                            st.download_button(
-                                label="Download Reddit Data (XLSX)",
-                                data=dataframe_to_xlsx_bytes(reddit_df, sheet_name="reddit_data"),
-                                file_name=f"reddit_r_{subreddit_name.strip()}_last_3_months.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            )
-                            st.success("Dataset ready for Insights.")
-
-                except PrawcoreException as exc:
-                    st.error(
-                        "Could not fetch Reddit data. Check credentials, subreddit name, and internet access. "
-                        f"Technical detail: {exc}"
-                    )
-                except Exception as exc:
-                    st.error(
-                        "Unexpected Reddit import error. "
-                        "Please retry and verify your inputs. "
-                        f"Technical detail: {exc}"
-                    )
-
-    if selected_source == "Marketplace (Amazon/Nykaa/Flipkart etc.)":
-        st.markdown("### Marketplace (Amazon/Nykaa/Flipkart etc.)")
-        st.write("Upload one XLSX file with exactly two columns: `Title` and `Body`.")
-        st.download_button(
-            label="Download Marketplace XLSX Template",
-            data=build_marketplace_template_xlsx_bytes(),
-            file_name="marketplace_reviews_template.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            help="Use this template format: exactly two columns, Title and Body.",
-        )
-
-        uploaded_file = st.file_uploader(
-            "Choose XLSX file",
-            type=["xlsx"],
-            accept_multiple_files=False,
-            help="Required columns: Title and Body only.",
-        )
-
-        if not uploaded_file:
-            st.info("No XLSX uploaded yet. Please upload a file with Title and Body columns.")
-        else:
-            with st.expander(f"File: {uploaded_file.name}", expanded=True):
-                try:
-                    df = read_xlsx_file(uploaded_file)
-                    prepared_df = prepare_marketplace_dataframe(df)
-                    st.session_state.current_dataset = prepared_df.copy()
-                    st.session_state.current_dataset_name = uploaded_file.name
-                    render_dataset_summary_block(prepared_df)
-                    st.success("Dataset ready for Insights.")
-                except pd.errors.EmptyDataError:
-                    st.error("This XLSX file is empty or invalid. Please upload a valid file with headers.")
-                except ValueError as exc:
-                    st.error(str(exc))
-                except Exception as exc:
-                    st.error(
-                        "Could not read this XLSX file. Please upload a valid .xlsx file "
-                        "using the provided template format. "
-                        f"Technical detail: {exc}"
-                    )
 
     next_disabled = st.session_state.current_dataset is None
     if st.button("Next -> Insights", disabled=next_disabled):
@@ -1775,7 +2041,7 @@ if st.session_state.active_tab == "Insights":
     st.subheader("Insights")
 
     if st.session_state.current_dataset is None:
-        st.info("Upload or fetch data in Upload Data first, then click Next.")
+        st.info("Upload data in Upload Data first, then click Next.")
     else:
         data_df = st.session_state.current_dataset.copy()
         data_name = st.session_state.current_dataset_name or "current dataset"
@@ -1798,28 +2064,30 @@ if st.session_state.active_tab == "Insights":
 
             st.markdown("### Sentiment Breakdown")
             sentiment_df = build_sentiment_table(texts)
-            metric_col1, metric_col2, metric_col3 = st.columns(3)
-            metric_col1.metric(
-                "% Negative",
-                f"{sentiment_df.loc[sentiment_df['sentiment'] == 'Negative', 'percentage'].iloc[0]}%",
-            )
-            metric_col2.metric(
-                "% Neutral",
-                f"{sentiment_df.loc[sentiment_df['sentiment'] == 'Neutral', 'percentage'].iloc[0]}%",
-            )
-            metric_col3.metric(
-                "% Positive",
-                f"{sentiment_df.loc[sentiment_df['sentiment'] == 'Positive', 'percentage'].iloc[0]}%",
-            )
-            fig, ax = plt.subplots()
-            ax.pie(
-                sentiment_df["count"],
-                labels=sentiment_df["sentiment"],
-                autopct="%1.1f%%",
-                startangle=90,
-            )
-            ax.axis("equal")
-            st.pyplot(fig)
+            sent_left, sent_right = st.columns([1, 1.25])
+            with sent_left:
+                st.metric(
+                    "% Negative",
+                    f"{sentiment_df.loc[sentiment_df['sentiment'] == 'Negative', 'percentage'].iloc[0]}%",
+                )
+                st.metric(
+                    "% Neutral",
+                    f"{sentiment_df.loc[sentiment_df['sentiment'] == 'Neutral', 'percentage'].iloc[0]}%",
+                )
+                st.metric(
+                    "% Positive",
+                    f"{sentiment_df.loc[sentiment_df['sentiment'] == 'Positive', 'percentage'].iloc[0]}%",
+                )
+            with sent_right:
+                fig, ax = plt.subplots(figsize=(3.2, 3.2))
+                ax.pie(
+                    sentiment_df["count"],
+                    labels=sentiment_df["sentiment"],
+                    autopct="%1.1f%%",
+                    startangle=90,
+                )
+                ax.axis("equal")
+                st.pyplot(fig)
 
             st.markdown("### Top Pain Themes (Cluster Preview)")
             themes = build_theme_previews(texts, min_themes=3, max_themes=5)
@@ -1831,9 +2099,8 @@ if st.session_state.active_tab == "Insights":
                     st.write(f"Mentions: {theme['mentions']}")
                     quotes = theme.get("quotes", [])
                     if quotes:
-                        st.write(f"Quote 1: \"{quotes[0]}\"")
-                    if len(quotes) > 1:
-                        st.write(f"Quote 2: \"{quotes[1]}\"")
+                        for quote_idx, quote in enumerate(quotes[:5], start=1):
+                            st.write(f"Quote {quote_idx}: \"{quote}\"")
                     st.divider()
 
     next_disabled = st.session_state.current_dataset is None
@@ -1848,7 +2115,7 @@ if st.session_state.active_tab == "Insights":
 if st.session_state.active_tab == "Product Concepts":
     st.subheader("Product Concepts")
     if st.session_state.current_dataset is None:
-        st.info("Upload/fetch data first, then go to Insights and Product Concepts.")
+        st.info("Upload data first, then go to Insights and Product Concepts.")
     else:
         concept_df_source = st.session_state.current_dataset.copy()
         concept_texts = get_analysis_texts(concept_df_source)
@@ -1864,63 +2131,364 @@ if st.session_state.active_tab == "Product Concepts":
         st.caption(
             f"Auto concept count: {concept_count} (derived from {len(concept_themes)} pain themes)."
         )
-        st.markdown("### LLM Settings")
-        llm_col1, llm_col2 = st.columns(2)
-        use_local_llm = True
-        llm_model = llm_col1.text_input("Model ID", value="google/flan-t5-base")
-        local_files_only = llm_col2.checkbox(
-            "Local files only",
-            value=False,
-            help="When OFF, model can auto-download on first run.",
-        )
+        st.markdown("### Optional: Google Search Trends Upload")
+        trends_url = build_dynamic_trends_explore_url(concept_pain_df, concept_themes)
+        st.link_button("Open Google Trends Explore", trends_url)
         st.caption(
-            "Product concepts are generated using the LLM only. First run may download model files."
+            "Google Trends opens with dynamic terms derived from detected pain themes and phrases. "
+            "Download the CSV for those shown topics and upload it below to improve search-traction evidence."
         )
+        trends_file = st.file_uploader(
+            "Upload Google Trends CSV (optional)",
+            type=["csv"],
+            accept_multiple_files=False,
+            key="trends_csv_uploader_step3",
+        )
+        if trends_file:
+            with st.expander(f"Trends File: {trends_file.name}", expanded=False):
+                try:
+                    trends_df = read_google_trends_csv(trends_file)
+                    st.session_state.current_trends_dataset = trends_df.copy()
+                    st.session_state.current_trends_dataset_name = trends_file.name
+                    trends_summary = build_trends_signal_summary(trends_df)
+                    tcol1, tcol2, tcol3 = st.columns(3)
+                    tcol1.metric("Rows", len(trends_df))
+                    tcol2.metric("Columns", len(trends_df.columns))
+                    tcol3.metric("Search Data Points", trends_summary["search_data_points"])
+                    st.caption(
+                        f"Avg Search Interest: {trends_summary['search_interest_avg']} | "
+                        f"Top Search Term: {trends_summary['top_search_term']}"
+                    )
+                    st.dataframe(trends_df.head(5), use_container_width=True)
+                    st.success("Google Trends data uploaded.")
+                except Exception as exc:
+                    st.error(
+                        "Could not read Google Trends CSV. Please upload the original CSV downloaded "
+                        f"from Google Trends. Technical detail: {exc}"
+                    )
+        elif st.session_state.current_trends_dataset is not None:
+            st.info(
+                f"Using trends file: {st.session_state.current_trends_dataset_name}. "
+                "Upload another CSV to replace it."
+            )
+        if st.session_state.current_trends_dataset is None:
+            st.info(
+                "No Google Trends CSV uploaded. Search-volume citation will show as 0. "
+                "You can upload it in this Product Concepts step."
+            )
+        else:
+            st.caption(
+                f"Using search trends file: {st.session_state.current_trends_dataset_name}"
+            )
+        generation_mode = st.radio(
+            "Generation Mode",
+            ["Deterministic", "LLM"],
+            horizontal=True,
+        )
+        use_local_llm = generation_mode == "LLM"
+        llm_model = "google/flan-t5-base"
+        local_files_only = False
+        if use_local_llm:
+            st.markdown("### LLM Settings")
+            llm_col1, llm_col2 = st.columns(2)
+            llm_model = llm_col1.text_input("Model ID", value="google/flan-t5-base")
+            local_files_only = llm_col2.checkbox(
+                "Local files only",
+                value=False,
+                help="When OFF, model can auto-download on first run.",
+            )
+            st.caption(
+                "LLM mode uses local Transformers. First run may download model files."
+            )
+        else:
+            st.caption("Deterministic mode uses local rule-based generation (no model inference).")
 
         if not concept_themes:
             st.info("No pain themes detected yet. Refine data quality or add more complaint-heavy data.")
         else:
-            concepts_df = generate_product_concepts(
-                themes=concept_themes,
-                pain_df=concept_pain_df,
-                data_df=concept_df_source,
-                selected_capabilities=selected_capabilities,
-                use_local_llm=use_local_llm,
-                llm_model=llm_model,
-                local_files_only=local_files_only,
-                min_concepts=5,
-                max_concepts=concept_count,
+            theme_count = len(concept_themes)
+            base_per_theme = concept_count // theme_count
+            remainder = concept_count % theme_count
+            per_theme_targets = [base_per_theme + (1 if i < remainder else 0) for i in range(theme_count)]
+
+            sequential_targets: List[Dict[str, object]] = []
+            for theme_idx, theme in enumerate(concept_themes):
+                for _ in range(per_theme_targets[theme_idx]):
+                    sequential_targets.append(theme)
+
+            progress_text = st.empty()
+            progress_bar = st.progress(0.0)
+
+            total_targets = max(1, len(sequential_targets))
+            total_attempted = 0
+            total_generated = 0
+            all_failures: Counter = Counter()
+            rendered_concepts: List[Dict[str, object]] = []
+
+            for seq_idx, theme in enumerate(sequential_targets, start=1):
+                progress_text.caption(f"Generating concept {seq_idx} of {total_targets}...")
+                single_df = generate_product_concepts(
+                    themes=[theme],
+                    pain_df=concept_pain_df,
+                    data_df=concept_df_source,
+                    trends_df=st.session_state.current_trends_dataset,
+                    selected_capabilities=selected_capabilities,
+                    use_local_llm=use_local_llm,
+                    llm_model=llm_model,
+                    local_files_only=local_files_only,
+                    min_concepts=1,
+                    max_concepts=1,
+                    concept_index_seed=seq_idx - 1,
+                )
+
+                total_attempted += int(single_df.attrs.get("llm_attempted_count", 0))
+                total_generated += int(single_df.attrs.get("llm_generated_count", 0))
+                all_failures.update(single_df.attrs.get("llm_failure_reasons", {}))
+
+                if not single_df.empty:
+                    rendered_concepts.extend(single_df.to_dict(orient="records"))
+
+                progress_bar.progress(seq_idx / total_targets)
+
+            progress_text.caption(
+                f"Generation complete: {len(rendered_concepts)} of {total_targets} concepts generated."
             )
 
-            if concepts_df.empty:
-                failures = concepts_df.attrs.get("llm_failure_reasons", {})
-                failure_text = ", ".join([f"{k}: {v}" for k, v in failures.items()]) if failures else "unknown"
-                st.warning(
-                    "Could not generate concept briefs from current themes. "
-                    f"LLM reasons: {failure_text}"
-                )
-            else:
-                attempted = int(concepts_df.attrs.get("llm_attempted_count", 0))
-                generated = int(concepts_df.attrs.get("llm_generated_count", 0))
-                failures = concepts_df.attrs.get("llm_failure_reasons", {})
-                if generated > 0:
-                    st.success(
-                        f"LLM generated {generated} concept brief(s) "
-                        f"from {attempted} theme-level prompt(s)."
+            if not rendered_concepts:
+                failure_text = ", ".join([f"{k}: {v}" for k, v in dict(all_failures).items()]) if all_failures else "unknown"
+                if use_local_llm:
+                    st.warning(
+                        "Could not generate concept briefs from current themes. "
+                        f"LLM reasons: {failure_text}"
                     )
-                if failures:
-                    failure_text = ", ".join([f"{k}: {v}" for k, v in failures.items()])
+                else:
+                    st.warning("Could not generate concept briefs from current themes in deterministic mode.")
+            else:
+                if use_local_llm:
+                    st.success(
+                        f"LLM generated {len(rendered_concepts)} concept brief(s) "
+                        f"from {total_attempted} field-level prompt attempt(s)."
+                    )
+                else:
+                    st.success(f"Deterministic mode generated {len(rendered_concepts)} concept brief(s).")
+                if use_local_llm and all_failures:
+                    failure_text = ", ".join([f"{k}: {v}" for k, v in dict(all_failures).items()])
                     st.info(f"LLM warnings: {failure_text}")
 
+                concepts_df = pd.DataFrame(rendered_concepts).copy()
+                concepts_df = enrich_opportunity_scores(concepts_df)
+                concepts_df["concept_id"] = [
+                    f"concept_{idx + 1}_{re.sub(r'[^a-z0-9]+', '_', str(name).lower())[:24]}"
+                    for idx, name in enumerate(concepts_df["product_name"].tolist())
+                ]
+                concepts_df = concepts_df.sort_values(by="opportunity_score", ascending=False).reset_index(drop=True)
+
+                # Decision summary: top 3 opportunities
+                st.markdown("### Top Opportunities")
+                top_df = concepts_df.head(3).copy()
+                card_cols = st.columns(3)
+                for idx, (_, row) in enumerate(top_df.iterrows()):
+                    with card_cols[idx]:
+                        st.markdown(f"**{row['product_name']}**")
+                        st.caption(f"`{row['format']}` | Theme: {row['theme']}")
+                        st.metric("Opportunity Score", f"{row['opportunity_score']:.1f}/100")
+                        st.progress(float(row["opportunity_score"]) / 100.0)
+                        why_wins = build_why_win_bullets(row.to_dict())
+                        for bullet in why_wins[:3]:
+                            st.write(f"- {bullet}")
+                        st.caption(
+                            f"📣 Reviews: {int(row['review_mentions'])} | 💬 Forums: {int(row['forum_mentions'])} | "
+                            f"📈 Search Avg: {row['search_interest_avg']}"
+                        )
+                        if st.button("View Brief", key=f"view_{row['concept_id']}"):
+                            st.session_state.focus_concept_id = row["concept_id"]
+
+                filtered_df = concepts_df.copy()
+
+                # Deep dive details
                 st.markdown("### Full Product Concept Briefs")
-                for idx, row in concepts_df.iterrows():
+                for idx, row in filtered_df.iterrows():
+                    row_dict = row.to_dict()
+                    concept_id = str(row_dict["concept_id"])
+                    focus_concept = st.session_state.get("focus_concept_id", "")
                     with st.expander(
-                        f"{idx + 1}. {row['product_name']} ({row['format']})",
-                        expanded=(idx < 3),
+                        f"{idx + 1}. {row_dict['product_name']} ({row_dict['format']})",
+                        expanded=(concept_id == focus_concept),
                     ):
-                        st.write(f"**Product Name:** {row['product_name']}")
-                        st.write(f"**Target Consumer Profile:** {row['target_consumer']}")
-                        st.write(f"**Key Ingredients / Formulation Direction:** {row['ingredients']}")
-                        st.write(f"**Suggested Price Point:** {row['price_point']}")
-                        st.write(f"**Format:** {row['format']}")
-                        st.write(f"**Competitive Positioning:** {row['positioning']}")
+                        compare_key = f"compare_{concept_id}"
+                        st.checkbox("Add to compare", key=compare_key)
+
+                        pitch = (
+                            f"{row_dict['product_name']} is a {str(row_dict['format']).lower()} concept for women "
+                            f"facing {str(row_dict['theme']).lower()}, designed to deliver clearer outcomes with stronger adherence."
+                        )
+                        st.markdown("**1-line pitch**")
+                        st.write(pitch)
+
+                        st.markdown("**Who it's for**")
+                        for bullet in split_profile_bullets(str(row_dict.get("target_consumer", "")))[:3]:
+                            st.write(f"- {bullet}")
+
+                        st.markdown("**What it is**")
+                        for bullet in get_usage_and_claims(str(row_dict.get("format", "Serum"))):
+                            st.write(f"- {bullet}")
+
+                        st.markdown("**Formulation direction**")
+                        st.write(str(row_dict.get("ingredients", "")))
+                        for bullet in build_formulation_rationale(
+                            str(row_dict.get("ingredients", "")),
+                            str(row_dict.get("theme", "")),
+                        ):
+                            st.write(f"- {bullet}")
+
+                        st.markdown("**Positioning**")
+                        st.write(f"- {row_dict.get('positioning', '')}")
+                        st.write(
+                            f"- Better pain-theme focus on '{row_dict.get('theme', '')}' than generic multi-claim offerings."
+                        )
+                        st.write("- Designed for stronger adherence through format-specific user experience.")
+
+                        st.markdown("**Evidence**")
+                        evidence_col1, evidence_col2 = st.columns([1, 1.2])
+                        with evidence_col1:
+                            st.metric("Review Mentions", int(row_dict.get("review_mentions", 0)))
+                            st.metric("Forum Mentions", int(row_dict.get("forum_mentions", 0)))
+                            st.metric("Search Interest Avg", float(row_dict.get("search_interest_avg", 0)))
+                            st.caption(
+                                f"Top Search Term: {row_dict.get('top_search_term', 'N/A')} | "
+                                f"Data Points: {int(row_dict.get('search_data_points', 0))}"
+                            )
+                        with evidence_col2:
+                            quotes = row_dict.get("theme_quotes", [])
+                            if not isinstance(quotes, list):
+                                quotes = []
+                            if not quotes:
+                                quotes = parse_quotes_from_evidence(str(row_dict.get("evidence", "")))
+                            if quotes:
+                                for qidx, quote in enumerate(quotes[:4], start=1):
+                                    st.write(f"Q{qidx}: \"{quote}\"")
+                            else:
+                                st.write(str(row_dict.get("evidence", "")))
+                            trend_series = get_trend_series(
+                                st.session_state.current_trends_dataset,
+                                str(row_dict.get("top_search_term", "")),
+                            )
+                            if trend_series is not None:
+                                st.line_chart(trend_series.reset_index(drop=True), height=120)
+
+                        st.markdown("**Score breakdown**")
+                        demand_seg = float(row_dict.get("demand_component", 0)) * 0.5
+                        competition_seg = float(row_dict.get("competition_component", 0)) * 0.25
+                        novelty_seg = float(row_dict.get("novelty_component", 0)) * 0.25
+                        fig, ax = plt.subplots(figsize=(5, 0.8))
+                        ax.barh(["Opportunity"], [demand_seg], color="#3b82f6", label="Demand")
+                        ax.barh(["Opportunity"], [competition_seg], left=[demand_seg], color="#10b981", label="Competition")
+                        ax.barh(
+                            ["Opportunity"],
+                            [novelty_seg],
+                            left=[demand_seg + competition_seg],
+                            color="#f59e0b",
+                            label="Novelty",
+                        )
+                        ax.set_xlim(0, 100)
+                        ax.set_xticks([])
+                        ax.legend(loc="upper center", bbox_to_anchor=(0.5, 1.9), ncol=3, frameon=False, fontsize=8)
+                        st.pyplot(fig)
+
+                        st.markdown("**Risks & assumptions**")
+                        for bullet in build_risk_assumptions(row_dict):
+                            st.write(f"- {bullet}")
+
+                        st.markdown("**Next experiments**")
+                        for bullet in build_next_experiments(row_dict):
+                            st.write(f"- {bullet}")
+
+                        st.download_button(
+                            label="Download this brief (JSON)",
+                            data=json.dumps(row_dict, indent=2, default=str),
+                            file_name=f"{concept_id}.json",
+                            mime="application/json",
+                            key=f"dl_one_{concept_id}",
+                        )
+
+                # Compare table from selected checkboxes
+                selected_ids = [
+                    cid
+                    for cid in concepts_df["concept_id"].tolist()
+                    if st.session_state.get(f"compare_{cid}", False)
+                ]
+                if selected_ids:
+                    st.markdown("### Compare Concepts")
+                    if len(selected_ids) < 2:
+                        st.info("Select at least 2 concepts to compare.")
+                    elif len(selected_ids) > 4:
+                        st.warning("Please compare up to 4 concepts at a time.")
+                    else:
+                        compare_df = concepts_df[concepts_df["concept_id"].isin(selected_ids)].copy()
+                        compare_df["why_win"] = compare_df.apply(
+                            lambda row: " | ".join(build_why_win_bullets(row.to_dict())[:3]),
+                            axis=1,
+                        )
+                        st.dataframe(
+                            compare_df[
+                                [
+                                    "product_name",
+                                    "format",
+                                    "price_point",
+                                    "ingredients",
+                                    "opportunity_score",
+                                    "review_mentions",
+                                    "forum_mentions",
+                                    "search_interest_avg",
+                                    "theme",
+                                    "why_win",
+                                ]
+                            ],
+                            use_container_width=True,
+                        )
+
+                # Export / share
+                st.markdown("### Export / Share")
+                export_scope_df = (
+                    concepts_df[concepts_df["concept_id"].isin(selected_ids)].copy()
+                    if selected_ids
+                    else filtered_df.copy()
+                )
+                if export_scope_df.empty:
+                    st.info("No concepts available for export with current filters/selection.")
+                else:
+                    export_cols = [
+                        "product_name",
+                        "format",
+                        "theme",
+                        "target_consumer",
+                        "ingredients",
+                        "price_point",
+                        "positioning",
+                        "opportunity_score",
+                        "review_mentions",
+                        "forum_mentions",
+                        "search_interest_avg",
+                        "top_search_term",
+                        "evidence",
+                    ]
+                    export_json = export_scope_df[export_cols].to_dict(orient="records")
+                    export_csv = export_scope_df[export_cols].to_csv(index=False)
+                    exp_col1, exp_col2, exp_col3 = st.columns(3)
+                    exp_col1.download_button(
+                        "Download briefs as JSON",
+                        data=json.dumps(export_json, indent=2, default=str),
+                        file_name="product_concepts.json",
+                        mime="application/json",
+                    )
+                    exp_col2.download_button(
+                        "Download briefs as CSV",
+                        data=export_csv,
+                        file_name="product_concepts.csv",
+                        mime="text/csv",
+                    )
+                    exp_col3.button(
+                        "Export selected to PDF (Coming Soon)",
+                        disabled=True,
+                        help="PDF export stub: JSON/CSV export is available now.",
+                    )
