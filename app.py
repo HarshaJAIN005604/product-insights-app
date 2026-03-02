@@ -4,10 +4,11 @@ import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+import altair as alt
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
@@ -27,28 +28,37 @@ st.markdown(
     """
     <style>
       :root {
-        --brand-bg-1: #fdf8f1;
-        --brand-bg-2: #fff3e6;
-        --brand-ink: #1f2937;
-        --brand-muted: #6b7280;
-        --brand-accent: #c66a16;
-        --brand-accent-soft: #fde7cf;
+        --brand-bg-1: #f6f7fb;
+        --brand-bg-2: #eef2ff;
+        --brand-bg-3: #ffffff;
+        --brand-ink: #111827;
+        --brand-muted: #4b5563;
+        --brand-accent: #d97706;
+        --brand-accent-soft: #fff7ed;
       }
-      .stApp {
-        background: radial-gradient(circle at 0% 0%, var(--brand-bg-2) 0%, var(--brand-bg-1) 50%, #fff 100%);
+      .stApp, [data-testid="stAppViewContainer"] {
+        background: radial-gradient(circle at 0% 0%, #dbeafe 0%, var(--brand-bg-2) 42%, var(--brand-bg-1) 100%);
+        color: var(--brand-ink);
+      }
+      [data-testid="stHeader"] {
+        background: transparent;
       }
       div[data-testid="stMetric"] {
-        background: #ffffffcc;
-        border: 1px solid #f1e2d0;
+        background: #ffffff;
+        border: 1px solid #dbe3ef;
         border-radius: 14px;
         padding: 10px 12px;
       }
+      .stAlert {
+        border-radius: 12px;
+      }
       .hero-wrap {
-        background: linear-gradient(120deg, #fff8ef 0%, #ffedd5 100%);
-        border: 1px solid #f2d7b7;
+        background: linear-gradient(130deg, #ffffff 0%, #eef2ff 60%, #dbeafe 100%);
+        border: 1px solid #d6dff0;
         border-radius: 18px;
         padding: 18px 20px;
-        margin-bottom: 8px;
+        margin-bottom: 10px;
+        box-shadow: 0 10px 26px rgba(15, 23, 42, 0.08);
       }
       .hero-title {
         font-size: 2rem;
@@ -69,11 +79,18 @@ st.markdown(
       .chip {
         background: var(--brand-accent-soft);
         color: #9a4f0e;
-        border: 1px solid #f0c79d;
+        border: 1px solid #fed7aa;
         border-radius: 999px;
         padding: 4px 10px;
         font-size: 0.82rem;
         font-weight: 600;
+      }
+      .ingest-card {
+        background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%);
+        border: 1px solid #dbe3ef;
+        border-radius: 16px;
+        padding: 14px 14px 10px 14px;
+        margin-bottom: 10px;
       }
       .stTabs [data-baseweb="tab"] {
         font-weight: 600;
@@ -107,6 +124,16 @@ if "current_dataset" not in st.session_state:
     st.session_state.current_dataset = None
 if "current_dataset_name" not in st.session_state:
     st.session_state.current_dataset_name = ""
+if "current_dataset_source" not in st.session_state:
+    st.session_state.current_dataset_source = ""
+if "marketplace_dataset" not in st.session_state:
+    st.session_state.marketplace_dataset = None
+if "marketplace_dataset_name" not in st.session_state:
+    st.session_state.marketplace_dataset_name = ""
+if "reddit_dataset" not in st.session_state:
+    st.session_state.reddit_dataset = None
+if "reddit_dataset_name" not in st.session_state:
+    st.session_state.reddit_dataset_name = ""
 if "current_trends_dataset" not in st.session_state:
     st.session_state.current_trends_dataset = None
 if "current_trends_dataset_name" not in st.session_state:
@@ -256,6 +283,30 @@ THEME_RULES = [
         ],
     },
     {
+        "title": "Breakouts & Acne Reactions",
+        "patterns": [
+            r"\b(breakouts?|acne|pimples?|comedones?)\b",
+            r"\bcaused?\s+(breakouts?|acne|pimples?)\b",
+            r"\b(skin|forehead|face).{0,20}(breakouts?|acne|pimples?)\b",
+        ],
+    },
+    {
+        "title": "Sticky Texture & Greasiness",
+        "patterns": [
+            r"\b(sticky|greasy|oily|greasiness)\b",
+            r"\b(residue|heavy|chipchip|chip chipa)\b",
+            r"\btoo\s+(greasy|oily|sticky)\b",
+        ],
+    },
+    {
+        "title": "Packaging & Dispensing Failure",
+        "patterns": [
+            r"\b(pump|bottle|packaging|dropper|cap|leak|leaking)\b",
+            r"\b(not working|broken|defective|stopped working)\b",
+            r"\b(package|packaging).{0,20}(bad|poor|damaged|faulty)\b",
+        ],
+    },
+    {
         "title": "Perceived Waste of Money",
         "patterns": [
             r"\bwaste of money\b",
@@ -265,6 +316,8 @@ THEME_RULES = [
         ],
     },
 ]
+
+THEME_PRIORITY = {rule["title"]: idx for idx, rule in enumerate(THEME_RULES)}
 
 COMPETITION_BY_FORMAT = {
     "Serum": 72,
@@ -439,6 +492,17 @@ WOMEN_HAIRCARE_BENEFIT_WORDS = [
     "Volume Recovery",
 ]
 
+THEME_NAME_DESCRIPTORS = {
+    "No Visible Results After Long-Term Use": ["Progress", "Visible", "Responder", "12-Week"],
+    "Rebound Hair Fall After Stopping Usage": ["Stabilize", "Retention", "Sustain", "Transition"],
+    "Product Runs Out Too Fast": ["Value", "Daily", "Month", "Dose"],
+    "Scalp Dryness & Irritation": ["Barrier", "Calm", "Comfort", "Hydra"],
+    "Breakouts & Acne Reactions": ["Clear", "Gentle", "Non-Comedo", "Derma"],
+    "Sticky Texture & Greasiness": ["Light", "Air", "Fresh", "Feather"],
+    "Packaging & Dispensing Failure": ["SmartPack", "EasyDose", "Flow", "Lock"],
+    "Perceived Waste of Money": ["Proof", "Smart", "Worth", "Save"],
+}
+
 INGREDIENT_BANK = {
     "regrowth": ["Caffeine", "Peptide Complex", "Niacinamide", "Redensyl"],
     "hair_fall": ["Anagain", "Amino Complex", "Saw Palmetto", "Pumpkin Seed Extract"],
@@ -581,6 +645,129 @@ def build_marketplace_template_xlsx_bytes() -> bytes:
     return output.getvalue()
 
 
+def build_dataset_xlsx_bytes(df: pd.DataFrame) -> bytes:
+    """Export a dataset into Shareable XLSX with Title/Body columns."""
+    if df is None or df.empty:
+        raise ValueError("Dataset is empty. Nothing to export.")
+    export_df = df.copy()
+    export_df.columns = [str(col).strip().lower() for col in export_df.columns]
+    if "title" not in export_df.columns:
+        export_df["title"] = ""
+    if "body" not in export_df.columns:
+        export_df["body"] = ""
+    export_df = export_df[["title", "body"]].fillna("")
+    export_df = export_df.rename(columns={"title": "Title", "body": "Body"})
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_df.to_excel(writer, index=False, sheet_name="reddit_dataset")
+    output.seek(0)
+    return output.getvalue()
+
+
+def clean_reddit_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+    """Apply Reddit cleanup: remove junk/bot, male-context, empties, and duplicates."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["title", "body"]), "Reddit cleaning: no rows to clean."
+    working = normalize_columns(df)
+    if "title" not in working.columns:
+        working["title"] = ""
+    if "body" not in working.columns:
+        working["body"] = ""
+    working = working[["title", "body"]].fillna("")
+    before = len(working)
+
+    junk_mask = working.apply(
+        lambda row: is_reddit_junk_text(str(row.get("title", "")), str(row.get("body", ""))),
+        axis=1,
+    )
+    male_mask = (
+        working["title"].astype(str).str.cat(working["body"].astype(str), sep=" ").apply(is_male_authored_or_male_context)
+    )
+    empty_mask = (
+        working["title"].astype(str).str.strip().eq("")
+        & working["body"].astype(str).str.strip().eq("")
+    )
+
+    filtered = working.loc[~(junk_mask | male_mask | empty_mask)].copy()
+    after_filter = len(filtered)
+
+    filtered["dedupe_key"] = (
+        filtered["title"].astype(str).str.lower().str.replace(r"\s+", " ", regex=True).str.strip()
+        + " || "
+        + filtered["body"].astype(str).str.lower().str.replace(r"\s+", " ", regex=True).str.strip()
+    )
+    deduped = filtered.drop_duplicates(subset=["dedupe_key"]).drop(columns=["dedupe_key"]).reset_index(drop=True)
+    after_dedupe = len(deduped)
+
+    summary = (
+        f"Reddit cleaning applied: kept {after_dedupe}/{before} rows "
+        f"(removed junk/bot={int(junk_mask.sum())}, male-context={int(male_mask.sum())}, "
+        f"empty={int(empty_mask.sum())}, duplicates={max(0, after_filter - after_dedupe)})."
+    )
+    return deduped, summary
+
+
+def combine_trends_batches(frames: List[pd.DataFrame]) -> pd.DataFrame:
+    """Combine multiple Google Trends batch CSVs into one table."""
+    if not frames:
+        return pd.DataFrame()
+    combined = frames[0].copy().reset_index(drop=True)
+    for idx, frame in enumerate(frames[1:], start=2):
+        current = frame.copy().reset_index(drop=True)
+        if current.empty:
+            continue
+        if not current.columns.empty:
+            first_col = str(current.columns[0])
+            combined_first = str(combined.columns[0]) if not combined.columns.empty else ""
+            if (
+                first_col
+                and combined_first
+                and first_col.lower() == combined_first.lower()
+                and len(current) == len(combined)
+                and current.iloc[:, 0].astype(str).equals(combined.iloc[:, 0].astype(str))
+            ):
+                current = current.iloc[:, 1:]
+        renamed_cols = []
+        for col in current.columns:
+            c = str(col)
+            if c in combined.columns:
+                c = f"{c} [batch {idx}]"
+            renamed_cols.append(c)
+        current.columns = renamed_cols
+        combined = pd.concat([combined, current], axis=1)
+    return combined
+
+
+def build_combined_required_dataset() -> Optional[pd.DataFrame]:
+    """Combine mandatory text sources (marketplace + reddit) into one analysis dataset."""
+    parts: List[pd.DataFrame] = []
+    marketplace_df = st.session_state.marketplace_dataset
+    reddit_df = st.session_state.reddit_dataset
+    if isinstance(marketplace_df, pd.DataFrame) and not marketplace_df.empty:
+        parts.append(marketplace_df[["title", "body"]].copy())
+    if isinstance(reddit_df, pd.DataFrame) and not reddit_df.empty:
+        parts.append(reddit_df[["title", "body"]].copy())
+    if not parts:
+        return None
+    combined = pd.concat(parts, ignore_index=True)
+    combined = combined.fillna("")
+    combined = combined.drop_duplicates(subset=["title", "body"]).reset_index(drop=True)
+    return combined
+
+
+def refresh_combined_dataset_state() -> None:
+    """Refresh current dataset state from mandatory source datasets."""
+    combined = build_combined_required_dataset()
+    if combined is None or combined.empty:
+        st.session_state.current_dataset = None
+        st.session_state.current_dataset_name = ""
+        st.session_state.current_dataset_source = ""
+    else:
+        st.session_state.current_dataset = combined
+        st.session_state.current_dataset_name = "combined_marketplace_reddit"
+        st.session_state.current_dataset_source = "combined"
+
+
 def reddit_public_get_json(url: str, timeout_sec: int = 25) -> Dict[str, object]:
     """Fetch Reddit public JSON endpoint with a browser-like User-Agent."""
     req = Request(
@@ -669,6 +856,7 @@ def fetch_reddit_public_discussions(
     days_back: int = 90,
     max_posts_per_subreddit: int = 80,
     max_comments_per_post: int = 40,
+    progress_callback: Optional[Callable[[str, int], None]] = None,
 ) -> pd.DataFrame:
     """Fetch Reddit posts/comments without API keys using public JSON endpoints."""
     if not subreddits:
@@ -702,11 +890,13 @@ def fetch_reddit_public_discussions(
         "male_filtered": 0,
         "error_examples": [],
     }
+    subreddit_comment_counts: Dict[str, int] = {}
 
     for subreddit in subreddits:
         normalized_sub = subreddit.strip().replace("r/", "").replace("/", "")
         if not normalized_sub:
             continue
+        subreddit_comment_counts.setdefault(normalized_sub, 0)
         diagnostics["subreddits_processed"] += 1
         query = quote(" OR ".join(keywords))
         after_token = ""
@@ -741,6 +931,8 @@ def fetch_reddit_public_discussions(
                     break
                 child_data = child.get("data", {}) if isinstance(child.get("data"), dict) else {}
                 diagnostics["posts_seen"] += 1
+                if progress_callback:
+                    progress_callback(normalized_sub, int(subreddit_comment_counts.get(normalized_sub, 0)))
                 created_utc = int(child_data.get("created_utc", 0) or 0)
                 if created_utc < after_ts:
                     stop_for_time = True
@@ -776,6 +968,9 @@ def fetch_reddit_public_discussions(
                             for comment_body in comment_bodies:
                                 rows.append({"title": title, "body": comment_body})
                                 diagnostics["comments_collected"] += 1
+                                subreddit_comment_counts[normalized_sub] = subreddit_comment_counts.get(normalized_sub, 0) + 1
+                                if progress_callback:
+                                    progress_callback(normalized_sub, int(subreddit_comment_counts.get(normalized_sub, 0)))
                     except Exception:
                         # Best effort; continue if comment fetch fails.
                         diagnostics["request_errors"] += 1
@@ -822,6 +1017,8 @@ def fetch_reddit_public_discussions(
                     child_data = child.get("data", {}) if isinstance(child.get("data"), dict) else {}
                     diagnostics["posts_seen"] += 1
                     diagnostics["fallback_posts_seen"] += 1
+                    if progress_callback:
+                        progress_callback(normalized_sub, int(subreddit_comment_counts.get(normalized_sub, 0)))
                     created_utc = int(child_data.get("created_utc", 0) or 0)
                     if created_utc < after_ts:
                         stop_for_time = True
@@ -861,6 +1058,9 @@ def fetch_reddit_public_discussions(
                                 for comment_body in comment_bodies:
                                     rows.append({"title": title, "body": comment_body})
                                     diagnostics["comments_collected"] += 1
+                                    subreddit_comment_counts[normalized_sub] = subreddit_comment_counts.get(normalized_sub, 0) + 1
+                                    if progress_callback:
+                                        progress_callback(normalized_sub, int(subreddit_comment_counts.get(normalized_sub, 0)))
                         except Exception:
                             diagnostics["request_errors"] += 1
                             if len(diagnostics["error_examples"]) < 5:
@@ -951,6 +1151,40 @@ def read_google_trends_csv(uploaded_file) -> pd.DataFrame:
     )
 
 
+def coerce_trend_series(series: pd.Series) -> pd.Series:
+    """Loosely coerce trend column values to numeric, handling '<1', commas and symbols."""
+    text = series.astype(str).str.strip()
+    text = text.str.replace("<1", "0.5", regex=False)
+    text = text.str.replace(",", "", regex=False)
+    text = text.str.replace("%", "", regex=False)
+    text = text.str.replace(r"[^0-9\.\-]", "", regex=True)
+    text = text.replace("", pd.NA)
+    return pd.to_numeric(text, errors="coerce")
+
+
+def extract_numeric_trends_matrix(trends_df: Optional[pd.DataFrame]) -> Tuple[pd.DataFrame, List[str]]:
+    """Extract high-confidence numeric trend columns from uploaded trends CSV."""
+    if trends_df is None or trends_df.empty:
+        return pd.DataFrame(), []
+    working = trends_df.copy()
+    kept_cols: List[str] = []
+    for col in working.columns:
+        col_name = str(col).strip()
+        lower_name = col_name.lower()
+        if any(token in lower_name for token in ["date", "day", "week", "month"]):
+            continue
+        converted = coerce_trend_series(working[col])
+        valid_ratio = float(converted.notna().sum()) / float(max(1, len(converted)))
+        has_spread = float(converted.dropna().nunique()) >= 2
+        mean_val = float(converted.dropna().mean()) if converted.notna().sum() > 0 else 0.0
+        if valid_ratio >= 0.45 and has_spread and mean_val > 0.0:
+            working[col_name] = converted
+            kept_cols.append(col_name)
+    if not kept_cols:
+        return pd.DataFrame(), []
+    return working[kept_cols].copy(), kept_cols
+
+
 def build_trends_signal_summary(trends_df: Optional[pd.DataFrame]) -> Dict[str, object]:
     """Build search-volume summary from uploaded Google Trends CSV."""
     if trends_df is None or trends_df.empty:
@@ -960,22 +1194,13 @@ def build_trends_signal_summary(trends_df: Optional[pd.DataFrame]) -> Dict[str, 
             "top_search_term": "N/A",
         }
 
-    working = trends_df.copy()
-    numeric_cols: List[str] = []
-    for col in working.columns:
-        series = pd.to_numeric(working[col], errors="coerce")
-        if series.notna().sum() > 0:
-            working[col] = series
-            numeric_cols.append(col)
-
+    numeric_df, numeric_cols = extract_numeric_trends_matrix(trends_df)
     if not numeric_cols:
         return {
             "search_interest_avg": 0.0,
             "search_data_points": 0,
             "top_search_term": "N/A",
         }
-
-    numeric_df = working[numeric_cols]
     avg_interest = float(numeric_df.stack().mean()) if not numeric_df.empty else 0.0
     row_means = numeric_df.mean(axis=0)
     top_col = str(row_means.idxmax()) if not row_means.empty else "N/A"
@@ -992,13 +1217,33 @@ def build_dynamic_trends_seed_terms(
     pain_df: pd.DataFrame,
     themes: List[Dict[str, object]],
 ) -> List[str]:
-    """Build high-intent Google Trends seed terms for women hair-care in India."""
+    """Build a comprehensive Google Trends seed set for women hair-care in India."""
     terms: List[str] = [
         "women hair fall",
         "hair growth serum women",
         "anti hair fall shampoo women",
         "scalp irritation women",
         "hair regrowth for women",
+        "best hair serum for women india",
+        "best shampoo for hair fall women",
+        "women dandruff treatment",
+        "dry scalp treatment women",
+        "itchy scalp women remedy",
+        "postpartum hair fall women",
+        "hair thinning in women",
+        "female pattern hair loss india",
+        "hair breakage women",
+        "frizzy hair serum women",
+        "oily scalp shampoo women",
+        "sulfate free shampoo women india",
+        "paraben free shampoo women india",
+        "keratin shampoo women india",
+        "biotin for hair growth women",
+        "rosemary oil for hair growth women",
+        "onion hair oil women india",
+        "scalp exfoliation women",
+        "non sticky hair serum women",
+        "hair care routine women india",
     ]
 
     theme_query_map = {
@@ -1032,7 +1277,20 @@ def build_dynamic_trends_seed_terms(
             seen.add(key)
             deduped.append(key)
 
-    return deduped[:5]
+    return deduped[:30]
+
+
+def build_trends_query_batches(terms: List[str], batch_size: int = 5) -> List[List[str]]:
+    """Split a comprehensive term list into Google Trends-compatible batches."""
+    cleaned_terms = [str(term).strip() for term in terms if str(term).strip()]
+    return [cleaned_terms[i : i + batch_size] for i in range(0, len(cleaned_terms), batch_size)]
+
+
+def build_trends_explore_url_from_terms(terms: List[str]) -> str:
+    """Build a pre-filled Google Trends URL from explicit terms."""
+    selected = [term for term in terms if term][:5]
+    encoded = ",".join([quote(term) for term in selected])
+    return f"https://trends.google.com/trends/explore?date=today%203-m&geo=IN&q={encoded}"
 
 
 def build_dynamic_trends_explore_url(
@@ -1041,8 +1299,7 @@ def build_dynamic_trends_explore_url(
 ) -> str:
     """Build a pre-filled Google Trends URL from detected high-intent terms."""
     selected = build_dynamic_trends_seed_terms(pain_df, themes)
-    encoded = ",".join([quote(term) for term in selected])
-    return f"https://trends.google.com/trends/explore?date=today%203-m&geo=IN&q={encoded}"
+    return build_trends_explore_url_from_terms(selected)
 
 
 def get_analysis_texts(df: pd.DataFrame) -> List[str]:
@@ -1231,28 +1488,68 @@ def build_sentiment_table(texts: List[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_theme_previews(texts: List[str], min_themes: int = 3, max_themes: int = 5) -> List[Dict[str, object]]:
+def match_theme_title_from_text(text: str) -> Optional[str]:
+    """Match a sentence/phrase to the first matching static theme rule."""
+    normalized_text = normalize_pain_phrase(str(text).lower())
+    matched_titles: List[str] = []
+    for rule in THEME_RULES:
+        if any(re.search(pattern, normalized_text, flags=re.IGNORECASE) for pattern in rule["patterns"]):
+            matched_titles.append(rule["title"])
+    if not matched_titles:
+        return None
+    matched_titles.sort(key=lambda title: THEME_PRIORITY.get(title, 999))
+    return matched_titles[0]
+
+
+def build_dynamic_theme_title_from_phrase(phrase: str) -> str:
+    """Generate a readable dynamic theme title from an uncovered pain phrase."""
+    tokens = [tok for tok in tokenize_words(str(phrase)) if tok not in DOMAIN_STOPWORDS]
+    if not tokens:
+        return "Emerging Consumer Pain Cluster"
+    words = [token.title() for token in tokens[:3]]
+    return "Emerging: " + " ".join(words)
+
+
+def assign_pain_phrase_theme_label(phrase: str, themes: List[Dict[str, object]]) -> str:
+    """Map a pain phrase to the closest available theme label."""
+    direct = match_theme_title_from_text(phrase)
+    if direct and any(str(theme.get("label", "")) == direct for theme in themes):
+        return direct
+
+    phrase_tokens = set(tokenize_words(str(phrase)))
+    best_label = "Other Emerging Issues"
+    best_overlap = 0
+    for theme in themes:
+        label = str(theme.get("label", ""))
+        candidate_tokens = set(tokenize_words(label))
+        for kw in theme.get("keywords", []) if isinstance(theme.get("keywords", []), list) else []:
+            candidate_tokens.update(tokenize_words(str(kw)))
+        overlap = len(phrase_tokens.intersection(candidate_tokens))
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_label = label
+    return best_label
+
+
+def build_theme_previews(
+    texts: List[str],
+    min_themes: int = 3,
+    max_themes: int = 5,
+    pain_df: Optional[pd.DataFrame] = None,
+) -> List[Dict[str, object]]:
     """Map complaint-like sentences to normalized consumer pain themes."""
     complaint_sentences = extract_complaint_sentences(texts)
     if not complaint_sentences:
         return []
 
     theme_buckets: Dict[str, Dict[str, object]] = {
-        rule["title"]: {"mentions": 0, "quotes": []} for rule in THEME_RULES
+        rule["title"]: {"mentions": 0, "quotes": [], "keywords": set()} for rule in THEME_RULES
     }
 
     for sentence in complaint_sentences:
-        normalized_sentence = normalize_pain_phrase(sentence.lower())
-
-        for rule in THEME_RULES:
-            matched = any(
-                re.search(pattern, normalized_sentence, flags=re.IGNORECASE)
-                for pattern in rule["patterns"]
-            )
-            if not matched:
-                continue
-
-            bucket = theme_buckets[rule["title"]]
+        matched_theme = match_theme_title_from_text(sentence)
+        if matched_theme:
+            bucket = theme_buckets[matched_theme]
             bucket["mentions"] += 1
             if len(bucket["quotes"]) < 5:
                 quote = sentence.strip()
@@ -1260,21 +1557,78 @@ def build_theme_previews(texts: List[str], min_themes: int = 3, max_themes: int 
                     quote = f"{quote[:197]}..."
                 if quote not in bucket["quotes"]:
                     bucket["quotes"].append(quote)
-            break
+            continue
+
+    if pain_df is None:
+        pain_df = build_pain_point_table(texts, top_n=25)
+
+    dynamic_themes: List[Dict[str, object]] = []
+    if pain_df is not None and not pain_df.empty:
+        for _, row in pain_df.head(25).iterrows():
+            phrase = str(row.get("pain_point", "")).strip()
+            count = int(row.get("count", 0))
+            if not phrase or count <= 0:
+                continue
+            matched_theme = match_theme_title_from_text(phrase)
+            if matched_theme:
+                bucket = theme_buckets[matched_theme]
+                bucket["keywords"].add(phrase)
+                continue
+            if count < 4:
+                continue
+            dyn_label = build_dynamic_theme_title_from_phrase(phrase)
+            dynamic_themes.append(
+                {
+                    "label": dyn_label,
+                    "mentions": count,
+                    "quotes": list(
+                        dict.fromkeys(
+                            [
+                                str(row.get("example_1", "")).strip(),
+                                str(row.get("example_2", "")).strip(),
+                            ]
+                        )
+                    ),
+                    "keywords": [phrase],
+                }
+            )
 
     themes = []
     for title, data in theme_buckets.items():
-        if data["mentions"] == 0:
+        if data["mentions"] == 0 and not data["keywords"]:
             continue
+        quote_list = [q for q in data["quotes"] if q]
+        keyword_list = list(data["keywords"])[:8]
         themes.append(
             {
                 "label": title,
                 "mentions": data["mentions"],
-                "quotes": data["quotes"],
+                "quotes": quote_list,
+                "keywords": keyword_list,
+            }
+        )
+
+    for dyn in dynamic_themes:
+        if any(existing["label"] == dyn["label"] for existing in themes):
+            continue
+        dyn_quotes = [q for q in dyn.get("quotes", []) if q]
+        themes.append(
+            {
+                "label": dyn["label"],
+                "mentions": int(dyn.get("mentions", 0)),
+                "quotes": dyn_quotes[:5],
+                "keywords": dyn.get("keywords", [])[:8],
             }
         )
 
     themes.sort(key=lambda item: item["mentions"], reverse=True)
+    if len(themes) < min_themes and dynamic_themes:
+        for dyn in dynamic_themes:
+            if len(themes) >= min_themes:
+                break
+            if any(existing["label"] == dyn["label"] for existing in themes):
+                continue
+            themes.append(dyn)
     return themes[:max_themes]
 
 
@@ -1447,6 +1801,14 @@ def safe_title_fragment(text: str, fallback: str = "Care") -> str:
     return " ".join(tokens) if tokens else fallback
 
 
+def phrase_to_name_token(phrase: str) -> str:
+    """Convert pain phrase to a compact title token for naming diversity."""
+    tokens = [tok.title() for tok in re.findall(r"[a-zA-Z]{3,}", str(phrase)) if tok.lower() not in DOMAIN_STOPWORDS]
+    if not tokens:
+        return "Care"
+    return tokens[0][:10]
+
+
 def infer_theme_tags(theme_label: str, top_pain_phrase: str) -> set:
     """Infer coarse concept tags from theme label and pain phrase."""
     combined = f"{theme_label} {top_pain_phrase}".lower()
@@ -1563,8 +1925,16 @@ def build_deterministic_product_name(
     profile = get_theme_db_profile(theme_label)
     stems = list(profile.get("name_stems", [])) or ["RootCare"]
     stem = stems[concept_index % len(stems)]
+    descriptor_pool = THEME_NAME_DESCRIPTORS.get(theme_label, ["Core", "Prime", "Advance", "Focus"])
+    descriptor = descriptor_pool[concept_index % len(descriptor_pool)]
     benefit = WOMEN_HAIRCARE_BENEFIT_WORDS[concept_index % len(WOMEN_HAIRCARE_BENEFIT_WORDS)]
-    return f"{stem} {benefit} {format_name}"
+    phrase_token = phrase_to_name_token(focus_phrase)
+    naming_pattern = concept_index % 3
+    if naming_pattern == 0:
+        return f"{stem} {descriptor} {format_name}"
+    if naming_pattern == 1:
+        return f"{stem} {benefit} {format_name}"
+    return f"{stem} {phrase_token} {format_name}"
 
 
 def build_deterministic_target_profile(
@@ -2083,25 +2453,26 @@ def build_concept_trend_signals(
     """Build per-concept search average and trend momentum from trends data."""
     n = len(concepts_df)
     if trends_df is None or trends_df.empty:
-        fallback_avg = concepts_df["search_interest_avg"].astype(float).tolist() if "search_interest_avg" in concepts_df.columns else [0.0] * n
+        fallback_avg = concepts_df["search_interest_avg"].astype(float).tolist() if "search_interest_avg" in concepts_df.columns else [12.0] * n
         return fallback_avg, [50.0] * n, ["N/A"] * n
 
-    working = trends_df.copy()
-    numeric_cols: List[str] = []
-    for col in working.columns:
-        converted = pd.to_numeric(working[col], errors="coerce")
-        if converted.notna().sum() > 0:
-            working[col] = converted
-            numeric_cols.append(col)
-
+    working, numeric_cols = extract_numeric_trends_matrix(trends_df)
     if not numeric_cols:
-        fallback_avg = concepts_df["search_interest_avg"].astype(float).tolist() if "search_interest_avg" in concepts_df.columns else [0.0] * n
+        fallback_avg = concepts_df["search_interest_avg"].astype(float).tolist() if "search_interest_avg" in concepts_df.columns else [12.0] * n
         return fallback_avg, [50.0] * n, ["N/A"] * n
+
+    global_avg = float(working.stack().mean()) if not working.empty else 12.0
+    if global_avg <= 0:
+        global_avg = 12.0
+    global_median = float(working.stack().median()) if not working.empty else global_avg
+    if global_median <= 0:
+        global_median = global_avg
 
     # Collision-aware assignment so concepts do not all map to the same trend column.
     max_use_per_column = max(1, (n + len(numeric_cols) - 1) // len(numeric_cols))
     usage_counter: Counter = Counter()
     assigned_column_by_index: Dict[int, str] = {}
+    confidence_by_index: Dict[int, float] = {}
     candidate_rows: List[Tuple[int, List[Tuple[str, float]]]] = []
     for idx, (_, row) in enumerate(concepts_df.iterrows()):
         ranked_candidates = rank_trend_columns_for_concept(row.to_dict(), numeric_cols)
@@ -2116,6 +2487,7 @@ def build_concept_trend_signals(
                 break
         usage_counter[chosen_col] += 1
         assigned_column_by_index[idx] = chosen_col
+        confidence_by_index[idx] = float(ranked_candidates[0][1]) if ranked_candidates else 0.0
 
     trend_avgs: List[float] = []
     trend_momentums: List[float] = []
@@ -2125,14 +2497,17 @@ def build_concept_trend_signals(
             idx,
             infer_best_trend_column_for_concept(row.to_dict(), numeric_cols),
         )
+        confidence = float(confidence_by_index.get(idx, 0.0))
         series = working[chosen].dropna()
-        if series.empty:
-            trend_avgs.append(0.0)
+        if series.empty or confidence <= 0.0:
+            trend_avgs.append(round(global_median, 2))
             trend_momentums.append(50.0)
-            trend_terms.append(str(chosen))
+            trend_terms.append(str(chosen) if confidence > 0.0 else "N/A (fallback)")
             continue
         avg_val = float(series.mean())
-        first = float(series.iloc[0]) if float(series.iloc[0]) != 0 else 1.0
+        if avg_val <= 0.0:
+            avg_val = global_avg
+        first = float(series.iloc[0]) if float(series.iloc[0]) != 0 else max(1.0, global_median)
         last = float(series.iloc[-1])
         growth = (last - first) / abs(first)
         growth = max(-1.0, min(1.0, growth))
@@ -2370,6 +2745,114 @@ def build_risk_assumptions(row: Dict[str, object]) -> List[str]:
     ]
 
 
+def get_step1_comment_pool() -> List[Dict[str, str]]:
+    """Build a deduplicated source-aware comment pool from Marketplace + Reddit datasets."""
+    pool: List[Dict[str, str]] = []
+    source_map = {
+        "marketplace_dataset": "Marketplace",
+        "reddit_dataset": "Reddit",
+    }
+    for key, source_label in source_map.items():
+        ds = st.session_state.get(key)
+        if isinstance(ds, pd.DataFrame) and not ds.empty:
+            normalized = normalize_columns(ds)
+            series = normalized["body"].fillna("").astype(str) if "body" in normalized.columns else normalized.get("title", pd.Series([], dtype=str)).fillna("").astype(str)
+            for text in series.tolist():
+                pool.append({"source": source_label, "text": str(text)})
+
+    deduped: List[Dict[str, str]] = []
+    seen = set()
+    for item in pool:
+        cleaned = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append({"source": str(item.get("source", "Input")), "text": cleaned})
+    return deduped
+
+
+def comment_to_relevant_snippet(comment: str, focus_tokens: set) -> str:
+    """Extract a short, relevant snippet from comment text."""
+    sentences = sentence_split(comment)
+    if not sentences:
+        snippet = comment
+    else:
+        best_sentence = sentences[0]
+        best_score = -1.0
+        for sent in sentences:
+            sent_tokens = set(re.findall(r"[a-z]{3,}", sent.lower()))
+            overlap = len(sent_tokens.intersection(focus_tokens))
+            cue = complaint_cue_hits(sent)
+            score = (overlap * 2.0) + (cue * 1.6)
+            if score > best_score:
+                best_score = score
+                best_sentence = sent
+        snippet = best_sentence
+
+    snippet = re.sub(r"\s+", " ", snippet).strip()
+    if len(snippet) > 180:
+        snippet = f"{snippet[:177]}..."
+    return snippet
+
+
+def snippet_jaccard(a: str, b: str) -> float:
+    """Compute token Jaccard similarity for snippet diversity filtering."""
+    ta = set(re.findall(r"[a-z]{3,}", a.lower()))
+    tb = set(re.findall(r"[a-z]{3,}", b.lower()))
+    if not ta or not tb:
+        return 0.0
+    return len(ta.intersection(tb)) / max(1, len(ta.union(tb)))
+
+
+def select_relevant_evidence_comments(row_dict: Dict[str, object], max_quotes: int = 5) -> List[str]:
+    """Select short, concept-relevant and diverse snippets from Step 1 sources."""
+    pool = get_step1_comment_pool()
+    if not pool:
+        return []
+
+    focus_text = " ".join(
+        [
+            str(row_dict.get("theme", "")),
+            str(row_dict.get("product_name", "")),
+            str(row_dict.get("ingredients", "")),
+            str(row_dict.get("format", "")),
+            str(row_dict.get("positioning", "")),
+            str(row_dict.get("evidence", "")),
+        ]
+    ).lower()
+    focus_tokens = set(re.findall(r"[a-z]{3,}", focus_text))
+    scored: List[Tuple[float, str, str]] = []
+    for item in pool:
+        comment = str(item.get("text", ""))
+        source = str(item.get("source", "Input"))
+        lc = comment.lower()
+        tokens = set(re.findall(r"[a-z]{3,}", lc))
+        overlap = len(tokens.intersection(focus_tokens))
+        cue_score = complaint_cue_hits(comment)
+        length = len(comment)
+        quality = 1.0 if 35 <= length <= 420 else 0.3
+        score = (overlap * 2.0) + (cue_score * 1.5) + quality
+        if score > 0:
+            snippet = comment_to_relevant_snippet(comment, focus_tokens)
+            snippet_bonus = 0.8 if 30 <= len(snippet) <= 180 else 0.0
+            scored.append((score + snippet_bonus, source, snippet))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    selected: List[str] = []
+    for _, source, snippet in scored:
+        formatted = f"[{source}] {snippet}"
+        too_similar = any(snippet_jaccard(formatted, prev) >= 0.6 for prev in selected)
+        if too_similar:
+            continue
+        if formatted not in selected:
+            selected.append(formatted)
+        if len(selected) >= max_quotes:
+            break
+    return selected
+
+
 def build_next_experiments(row: Dict[str, object]) -> List[str]:
     """Generate practical next-step experiments."""
     return [
@@ -2412,22 +2895,19 @@ def render_full_concept_brief(row_dict: Dict[str, object]) -> None:
     st.write("- Designed for stronger adherence through format-specific user experience.")
 
     st.markdown("**Evidence**")
-    evidence_col1, evidence_col2 = st.columns([1, 1.2])
-    quotes = row_dict.get("theme_quotes", [])
-    if not isinstance(quotes, list):
-        quotes = []
-    if not quotes:
-        quotes = parse_quotes_from_evidence(str(row_dict.get("evidence", "")))
-    with evidence_col1:
-        st.markdown("**Sample Review Mentions (Category-specific)**")
-        if quotes:
-            for qidx, quote in enumerate(quotes[:5], start=1):
-                st.write(f"- {quote}")
-        else:
-            st.write("- No review snippets available for this category yet.")
-    with evidence_col2:
-        st.markdown("**Forum Mentions**")
-        st.info("Coming soon")
+    comments = select_relevant_evidence_comments(row_dict, max_quotes=5)
+    if not comments:
+        fallback_quotes = row_dict.get("theme_quotes", [])
+        if not isinstance(fallback_quotes, list):
+            fallback_quotes = []
+        if not fallback_quotes:
+            fallback_quotes = parse_quotes_from_evidence(str(row_dict.get("evidence", "")))
+        comments = [str(q).strip() for q in fallback_quotes if str(q).strip()][:5]
+    if comments:
+        for quote in comments:
+            st.write(f"- {quote}")
+    else:
+        st.write("- No relevant comments available yet from current inputs.")
 
     st.markdown("**Risks & assumptions**")
     for bullet in build_risk_assumptions(row_dict):
@@ -2539,6 +3019,7 @@ def generate_product_concepts(
 
     if not use_local_llm:
         deterministic_counter = int(concept_index_seed)
+        used_names: set = set()
         for theme_idx, theme in enumerate(themes):
             theme_label = str(theme.get("label", "Consumer Pain"))
             theme_mentions = int(theme.get("mentions", 0))
@@ -2557,13 +3038,22 @@ def generate_product_concepts(
             for idx in range(theme_target):
                 deterministic_counter += 1
                 focus_phrase = theme_phrase_pool[idx % len(theme_phrase_pool)]
-                format_name = choose_formats_for_theme(theme_label, idx)
+                # Use global deterministic counter so formats rotate across sequential generation calls.
+                format_name = choose_formats_for_theme(theme_label, deterministic_counter)
                 product_name = build_deterministic_product_name(
                     theme_label=theme_label,
                     format_name=format_name,
                     focus_phrase=focus_phrase,
                     concept_index=deterministic_counter,
                 )
+                if product_name in used_names:
+                    product_name = build_deterministic_product_name(
+                        theme_label=theme_label,
+                        format_name=format_name,
+                        focus_phrase=focus_phrase,
+                        concept_index=deterministic_counter + 7,
+                    )
+                used_names.add(product_name)
                 concept_obj = {
                     "name": product_name,
                     "format": format_name,
@@ -2918,68 +3408,93 @@ st.progress((current_index + 1) / len(FLOW_STEPS))
 # Upload Data section
 # -------------------------------
 if st.session_state.active_tab == "Upload Data":
-    st.subheader("Step 1: Import Women Hair-Care Voice-of-Customer Data")
-    st.write(
-        "Use either marketplace uploads or no-API Reddit fetch to build India women hair-care insight input."
+    st.subheader("Step 1: Required Data Inputs (All 3 Needed)")
+    st.caption(
+        "Complete all three sources below to unlock Insights: Marketplace Reviews + Reddit Discussions + Google Trends."
     )
-    source_mode = st.radio(
-        "Input Source",
-        ["Marketplace Upload (XLSX)", "Reddit Public Fetch (No API Key)"],
+    status_col1, status_col2, status_col3 = st.columns(3)
+    status_col1.metric("Marketplace", "Ready" if st.session_state.marketplace_dataset is not None else "Pending")
+    status_col2.metric("Reddit", "Ready" if st.session_state.reddit_dataset is not None else "Pending")
+    status_col3.metric("Google Trends", "Ready" if st.session_state.current_trends_dataset is not None else "Pending")
+
+    st.markdown('<div class="ingest-card">', unsafe_allow_html=True)
+    st.markdown("### 1) Marketplace Reviews (Required)")
+    st.write("Upload one XLSX file with exactly two columns: `Title` and `Body`.")
+    st.caption(
+        "Quick prep tip: copy review text from top 5 relevant product listings, paste once into ChatGPT, "
+        "ask for a clean XLSX in this template, then upload."
+    )
+    with st.expander("Copy-Paste Prompt for ChatGPT (Marketplace Data Prep)", expanded=False):
+        st.code(
+            """I am building a women hair-care insights app for India.
+Convert the raw marketplace review text I provide into a downloadable Excel file (.xlsx)
+with EXACTLY these two columns and names:
+1) Title
+2) Body
+
+Rules:
+- Keep only meaningful consumer review content.
+- Remove spam, duplicate lines, and non-review text.
+- Keep one review per row.
+- If a review has no clear title, create a short title from the sentence.
+- Do not add any extra columns.
+- Preserve original meaning; do not rewrite sentiment.
+
+Output needed:
+- Provide a downloadable .xlsx file named: marketplace_reviews_prepared.xlsx
+- Also show a preview of first 10 rows in table format.
+
+Raw review text starts below:
+[PASTE AMAZON/NYKAA/FLIPKART REVIEWS FROM TOP 5 PRODUCTS HERE]""",
+            language="text",
+        )
+    st.download_button(
+        label="Download Marketplace XLSX Template",
+        data=build_marketplace_template_xlsx_bytes(),
+        file_name="marketplace_reviews_template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Use this template format: exactly two columns, Title and Body.",
+    )
+    uploaded_file = st.file_uploader(
+        "Upload Marketplace XLSX",
+        type=["xlsx"],
+        accept_multiple_files=False,
+        key="marketplace_xlsx_uploader_required",
+        help="Required columns: Title and Body only.",
+    )
+    if uploaded_file:
+        try:
+            df = read_xlsx_file(uploaded_file)
+            prepared_df = prepare_marketplace_dataframe(df)
+            st.session_state.marketplace_dataset = prepared_df.copy()
+            st.session_state.marketplace_dataset_name = uploaded_file.name
+            render_dataset_summary_block(prepared_df)
+            filtered_count = int(prepared_df.attrs.get("male_filtered", 0))
+            if filtered_count > 0:
+                st.caption(f"Filtered male-authored/male-context rows: {filtered_count}")
+            st.success("Marketplace dataset saved.")
+        except Exception as exc:
+            st.error(f"Marketplace upload failed. {exc}")
+    elif st.session_state.marketplace_dataset is not None:
+        st.info(f"Using marketplace file: {st.session_state.marketplace_dataset_name}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="ingest-card">', unsafe_allow_html=True)
+    st.markdown("### 2) Reddit Discussions (Required)")
+    st.markdown(
+        """
+        - `Fetch Reddit Data`: best for local runs.
+        - `Upload Prepared Reddit XLSX`: best for cloud if fetch hits 403/429.
+        """
+    )
+    reddit_route = st.radio(
+        "Reddit input route",
+        ["Fetch Reddit Data", "Upload Prepared Reddit XLSX"],
         horizontal=True,
+        key="reddit_route_required",
     )
-
-    if source_mode == "Marketplace Upload (XLSX)":
-        st.markdown("### Marketplace Reviews (Amazon / Nykaa / Flipkart)")
-        st.write("Upload one XLSX file with exactly two columns: `Title` and `Body`.")
-        st.download_button(
-            label="Download Marketplace XLSX Template",
-            data=build_marketplace_template_xlsx_bytes(),
-            file_name="marketplace_reviews_template.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            help="Use this template format: exactly two columns, Title and Body.",
-        )
-
-        uploaded_file = st.file_uploader(
-            "Choose XLSX file",
-            type=["xlsx"],
-            accept_multiple_files=False,
-            help="Required columns: Title and Body only.",
-        )
-
-        if not uploaded_file:
-            st.info("No XLSX uploaded yet. Please upload a file with Title and Body columns.")
-        else:
-            with st.expander(f"File: {uploaded_file.name}", expanded=True):
-                try:
-                    df = read_xlsx_file(uploaded_file)
-                    prepared_df = prepare_marketplace_dataframe(df)
-                    st.session_state.current_dataset = prepared_df.copy()
-                    st.session_state.current_dataset_name = uploaded_file.name
-                    render_dataset_summary_block(prepared_df)
-                    marketplace_male_filtered = int(prepared_df.attrs.get("male_filtered", 0))
-                    if marketplace_male_filtered > 0:
-                        st.caption(
-                            f"Filtered male-authored/male-context rows: {marketplace_male_filtered}"
-                        )
-                    st.success("Dataset ready for Insights.")
-                except pd.errors.EmptyDataError:
-                    st.error("This XLSX file is empty or invalid. Please upload a valid file with headers.")
-                except ValueError as exc:
-                    st.error(str(exc))
-                except Exception as exc:
-                    st.error(
-                        "Could not read this XLSX file. Please upload a valid .xlsx file "
-                        "using the provided template format. "
-                        f"Technical detail: {exc}"
-                    )
-    else:
-        st.markdown("### Reddit Public Fetch (No API Key)")
-        st.caption(
-            "Uses Reddit public JSON endpoints. Best-effort fetch with rate limiting and last-N-days filtering."
-        )
-        default_subs = (
-            "IndianSkincareAddicts, IndianHairLossRecovery, HaircareScience, FemaleHairAdvice"
-        )
+    if reddit_route == "Fetch Reddit Data":
+        default_subs = "IndianSkincareAddicts, HaircareScience, FemaleHairAdvice"
         default_keywords = "women hair fall, hair thinning women, scalp irritation, dandruff women, hair regrowth"
         reddit_subreddits_text = st.text_input("Subreddits (comma-separated)", value=default_subs)
         reddit_keywords_text = st.text_input("Keywords (comma-separated)", value=default_keywords)
@@ -2987,7 +3502,6 @@ if st.session_state.active_tab == "Upload Data":
         days_back = int(col_r1.slider("Lookback (days)", min_value=30, max_value=365, value=120, step=10))
         max_posts = int(col_r2.slider("Max posts/subreddit", min_value=20, max_value=120, value=60, step=10))
         max_comments = int(col_r3.slider("Max comments/post", min_value=5, max_value=80, value=25, step=5))
-
         if st.button("Fetch Reddit Discussions"):
             subreddits = [item.strip() for item in reddit_subreddits_text.split(",") if item.strip()]
             keywords = [item.strip() for item in reddit_keywords_text.split(",") if item.strip()]
@@ -2996,7 +3510,14 @@ if st.session_state.active_tab == "Upload Data":
             elif not keywords:
                 st.error("Please enter at least one keyword.")
             else:
-                with st.spinner("Fetching Reddit posts and comments (public endpoints)..."):
+                progress_caption = st.empty()
+
+                def update_reddit_progress(subreddit_name: str, comments_count: int) -> None:
+                    progress_caption.caption(
+                        f"Fetching r/{subreddit_name} | comments fetched so far: {comments_count}"
+                    )
+
+                with st.spinner("Fetching Reddit posts and comments..."):
                     try:
                         reddit_df = fetch_reddit_public_discussions(
                             subreddits=subreddits,
@@ -3004,42 +3525,135 @@ if st.session_state.active_tab == "Upload Data":
                             days_back=days_back,
                             max_posts_per_subreddit=max_posts,
                             max_comments_per_post=max_comments,
+                            progress_callback=update_reddit_progress,
                         )
+                        progress_caption.caption("Reddit fetch complete.")
                         reddit_diag = reddit_df.attrs.get("reddit_diagnostics", {})
                         if reddit_df.empty:
                             st.warning("No Reddit data fetched for current filters.")
-                            request_errors = int(reddit_diag.get("request_errors", 0))
-                            posts_seen = int(reddit_diag.get("posts_seen", 0))
-                            if request_errors > 0 and posts_seen == 0:
-                                st.info(
-                                    "Reddit likely rate-limited/blocked this attempt. Wait 1-2 minutes and retry "
-                                    "with fewer subreddits (2-3)."
-                                )
-                            elif posts_seen > 0:
-                                st.info(
-                                    "Fetched posts but none matched current keyword filters. Try shorter terms like "
-                                    "`hair fall, dandruff, itchy scalp, hair thinning`."
-                                )
-                            else:
-                                st.info(
-                                    "Try wider settings: Lookback 180-365 days and max posts 80-120."
-                                )
                             render_reddit_fetch_diagnostics(reddit_diag)
                         else:
-                            st.session_state.current_dataset = reddit_df.copy()
-                            st.session_state.current_dataset_name = (
+                            cleaned_reddit_df, cleaning_summary = clean_reddit_dataframe(reddit_df)
+                            st.session_state.reddit_dataset = cleaned_reddit_df.copy()
+                            st.session_state.reddit_dataset_name = (
                                 f"reddit_public_{len(subreddits)}subs_{len(keywords)}terms"
                             )
-                            render_dataset_summary_block(reddit_df)
+                            render_dataset_summary_block(cleaned_reddit_df)
                             render_reddit_fetch_diagnostics(reddit_diag)
-                            st.success("Reddit dataset ready for Insights.")
+                            st.caption(cleaning_summary)
+                            reddit_export_bytes = build_dataset_xlsx_bytes(cleaned_reddit_df)
+                            st.download_button(
+                                label="Download Reddit Data as XLSX",
+                                data=reddit_export_bytes,
+                                file_name="reddit_prepared_dataset.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                help="This file is upload-safe in the manual Reddit route.",
+                            )
+                            st.success("Reddit dataset saved.")
                     except Exception as exc:
                         st.error(
-                            "Reddit fetch failed (public no-key flow). Try fewer subreddits, broader keywords, "
-                            f"or retry later. Technical detail: {exc}"
+                            "Reddit fetch failed. Try fewer subreddits or upload prepared Reddit XLSX. "
+                            f"Technical detail: {exc}"
                         )
+    else:
+        st.download_button(
+            label="Download Reddit XLSX Template",
+            data=build_marketplace_template_xlsx_bytes(),
+            file_name="reddit_prepared_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help="Use exact schema: Title and Body.",
+        )
+        reddit_uploaded_file = st.file_uploader(
+            "Upload Prepared Reddit XLSX",
+            type=["xlsx"],
+            accept_multiple_files=False,
+            key="reddit_manual_xlsx_uploader_required",
+            help="Required columns: Title and Body only.",
+        )
+        if reddit_uploaded_file:
+            try:
+                reddit_manual_df = read_xlsx_file(reddit_uploaded_file)
+                prepared_reddit_df = prepare_marketplace_dataframe(reddit_manual_df)
+                cleaned_reddit_df, cleaning_summary = clean_reddit_dataframe(prepared_reddit_df)
+                st.session_state.reddit_dataset = cleaned_reddit_df.copy()
+                st.session_state.reddit_dataset_name = reddit_uploaded_file.name
+                render_dataset_summary_block(cleaned_reddit_df)
+                reddit_male_filtered = int(prepared_reddit_df.attrs.get("male_filtered", 0))
+                if reddit_male_filtered > 0:
+                    st.caption(f"Filtered male-authored/male-context rows: {reddit_male_filtered}")
+                st.caption(cleaning_summary)
+                st.success("Reddit dataset saved.")
+            except Exception as exc:
+                st.error(f"Reddit upload failed. {exc}")
+        elif st.session_state.reddit_dataset is not None:
+            st.info(f"Using reddit file: {st.session_state.reddit_dataset_name}")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    next_disabled = st.session_state.current_dataset is None
+    st.markdown('<div class="ingest-card">', unsafe_allow_html=True)
+    st.markdown("### 3) Google Trends (Required)")
+    base_for_terms = st.session_state.marketplace_dataset if st.session_state.marketplace_dataset is not None else pd.DataFrame(columns=["title", "body"])
+    base_texts = get_analysis_texts(base_for_terms)
+    base_pain_df = build_pain_point_table(base_texts, top_n=20) if base_texts else pd.DataFrame()
+    base_themes = build_theme_previews(base_texts, min_themes=3, max_themes=5, pain_df=base_pain_df) if base_texts else []
+    trend_terms = build_dynamic_trends_seed_terms(base_pain_df, base_themes)
+    trend_batches = build_trends_query_batches(trend_terms, batch_size=5)
+    st.caption("Google Trends is split into 5-term batches. Open each batch and upload its CSV.")
+    uploaded_trend_frames: List[pd.DataFrame] = []
+    uploaded_trend_names: List[str] = []
+    for idx, batch in enumerate(trend_batches[:8], start=1):
+        row_left, row_right = st.columns(2)
+        with row_left:
+            st.caption(f"Batch {idx}")
+            st.link_button(
+                f"Open Google Trends Explore (Batch {idx})",
+                build_trends_explore_url_from_terms(batch),
+                use_container_width=True,
+            )
+        with row_right:
+            batch_file = st.file_uploader(
+                f"Upload Google Trends CSV - Batch {idx}",
+                type=["csv"],
+                accept_multiple_files=False,
+                key=f"trends_csv_batch_{idx}",
+            )
+        if batch_file:
+            try:
+                batch_df = read_google_trends_csv(batch_file)
+                uploaded_trend_frames.append(batch_df)
+                uploaded_trend_names.append(batch_file.name)
+            except Exception as exc:
+                st.error(f"Batch {idx} could not be read. {exc}")
+
+    if uploaded_trend_frames:
+        trends_df = combine_trends_batches(uploaded_trend_frames)
+        st.session_state.current_trends_dataset = trends_df.copy()
+        st.session_state.current_trends_dataset_name = " + ".join(uploaded_trend_names)
+        trends_summary = build_trends_signal_summary(trends_df)
+        tcol1, tcol2, tcol3 = st.columns(3)
+        tcol1.metric("Rows", len(trends_df))
+        tcol2.metric("Columns", len(trends_df.columns))
+        tcol3.metric("Search Data Points", trends_summary["search_data_points"])
+        st.caption(
+            f"Avg Search Interest: {trends_summary['search_interest_avg']} | "
+            f"Top Search Term: {trends_summary['top_search_term']}"
+        )
+        st.dataframe(trends_df.head(5), use_container_width=True)
+        st.success(f"Google Trends batches combined and saved ({len(uploaded_trend_frames)} batch file(s)).")
+    elif st.session_state.current_trends_dataset is not None:
+        st.info(f"Using trends file(s): {st.session_state.current_trends_dataset_name}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    refresh_combined_dataset_state()
+    all_required_ready = (
+        st.session_state.marketplace_dataset is not None
+        and st.session_state.reddit_dataset is not None
+        and st.session_state.current_trends_dataset is not None
+        and st.session_state.current_dataset is not None
+    )
+    if not all_required_ready:
+        st.warning("All 3 sources are mandatory. Please complete Marketplace, Reddit, and Google Trends inputs.")
+
+    next_disabled = not all_required_ready
     if st.button("Next -> Insights", disabled=next_disabled):
         st.session_state.active_tab = "Insights"
         st.rerun()
@@ -3050,9 +3664,13 @@ if st.session_state.active_tab == "Upload Data":
 # -------------------------------
 if st.session_state.active_tab == "Insights":
     st.subheader("Step 2: Consumer Insight Signals (Women Hair-Care, India)")
-
-    if st.session_state.current_dataset is None:
-        st.info("Upload data in Upload Data first, then click Next.")
+    required_missing = (
+        st.session_state.marketplace_dataset is None
+        or st.session_state.reddit_dataset is None
+        or st.session_state.current_trends_dataset is None
+    )
+    if required_missing or st.session_state.current_dataset is None:
+        st.info("Complete all required Step 1 inputs (Marketplace + Reddit + Google Trends), then click Next.")
     else:
         data_df = st.session_state.current_dataset.copy()
         data_name = st.session_state.current_dataset_name or "current dataset"
@@ -3063,15 +3681,51 @@ if st.session_state.active_tab == "Insights":
         if not texts:
             st.warning("No usable text found for analysis. Ensure title/body have content.")
         else:
-            st.markdown("### Top Recurring Keywords (Pain Signals)")
             pain_df = build_pain_point_table(texts, top_n=15)
+            themes = build_theme_previews(texts, min_themes=3, max_themes=5, pain_df=pain_df)
+            st.markdown("### Top Recurring Keywords (Pain Signals)")
             if pain_df.empty:
                 st.info("Not enough complaint-like text to extract pain phrases yet.")
             else:
-                st.dataframe(
-                    pain_df[["pain_point", "count", "example_1", "example_2"]],
-                    use_container_width=True,
+                bubble_df = pain_df[["pain_point", "count", "example_1", "example_2"]].copy()
+                if themes:
+                    bubble_df["theme"] = bubble_df["pain_point"].apply(
+                        lambda phrase: assign_pain_phrase_theme_label(str(phrase), themes)
+                    )
+                else:
+                    bubble_df["theme"] = "Other Emerging Issues"
+                bubble_df["examples"] = bubble_df.apply(
+                    lambda row: " | ".join(
+                        list(
+                            dict.fromkeys(
+                                [
+                                    str(row.get("example_1", "")).strip(),
+                                    str(row.get("example_2", "")).strip(),
+                                ]
+                            )
+                        )[:2]
+                    ),
+                    axis=1,
                 )
+                bubble_df["examples"] = bubble_df["examples"].replace("", "No example available")
+                bubble_chart = (
+                    alt.Chart(bubble_df)
+                    .mark_circle(opacity=0.82, stroke="#1f2937", strokeWidth=0.5)
+                    .encode(
+                        x=alt.X("count:Q", title="Mention Count"),
+                        y=alt.Y("pain_point:N", sort="-x", title="Pain Point"),
+                        size=alt.Size("count:Q", scale=alt.Scale(range=[260, 2600]), legend=None),
+                        color=alt.Color("theme:N", title="Mapped Theme"),
+                        tooltip=[
+                            alt.Tooltip("pain_point:N", title="Pain Point"),
+                            alt.Tooltip("theme:N", title="Mapped Theme"),
+                            alt.Tooltip("count:Q", title="Count"),
+                            alt.Tooltip("examples:N", title="Unique Examples"),
+                        ],
+                    )
+                    .properties(height=420)
+                )
+                st.altair_chart(bubble_chart, use_container_width=True)
 
             st.markdown("### Sentiment Breakdown")
             sentiment_df = build_sentiment_table(texts)
@@ -3101,7 +3755,6 @@ if st.session_state.active_tab == "Insights":
                 st.pyplot(fig)
 
             st.markdown("### Top Pain Themes (Cluster Preview)")
-            themes = build_theme_previews(texts, min_themes=3, max_themes=5)
             if not themes:
                 st.info("Not enough data to build themes yet.")
             else:
@@ -3114,7 +3767,12 @@ if st.session_state.active_tab == "Insights":
                             st.write(f"Quote {quote_idx}: \"{quote}\"")
                     st.divider()
 
-    next_disabled = st.session_state.current_dataset is None
+    next_disabled = (
+        st.session_state.current_dataset is None
+        or st.session_state.current_trends_dataset is None
+        or st.session_state.marketplace_dataset is None
+        or st.session_state.reddit_dataset is None
+    )
     if st.button("Next -> Product Concepts", disabled=next_disabled):
         st.session_state.active_tab = "Product Concepts"
         st.rerun()
@@ -3125,13 +3783,18 @@ if st.session_state.active_tab == "Insights":
 # -------------------------------
 if st.session_state.active_tab == "Product Concepts":
     st.subheader("Step 3: Product Opportunity Concepts")
-    if st.session_state.current_dataset is None:
-        st.info("Upload data first, then go to Insights and Product Concepts.")
+    required_missing = (
+        st.session_state.marketplace_dataset is None
+        or st.session_state.reddit_dataset is None
+        or st.session_state.current_trends_dataset is None
+    )
+    if required_missing or st.session_state.current_dataset is None:
+        st.info("Complete all required Step 1 inputs before opening Product Concepts.")
     else:
         concept_df_source = st.session_state.current_dataset.copy()
         concept_texts = get_analysis_texts(concept_df_source)
-        concept_themes = build_theme_previews(concept_texts, min_themes=3, max_themes=5)
         concept_pain_df = build_pain_point_table(concept_texts, top_n=20)
+        concept_themes = build_theme_previews(concept_texts, min_themes=3, max_themes=5, pain_df=concept_pain_df)
         selected_capabilities = {
             "Topical Formulation",
             "Clinical Claims",
@@ -3142,82 +3805,7 @@ if st.session_state.active_tab == "Product Concepts":
         st.caption(
             f"Auto concept count: {concept_count} (derived from {len(concept_themes)} pain themes)."
         )
-        st.markdown("### Optional: Google Search Trends (India) Upload")
-        trend_terms = build_dynamic_trends_seed_terms(concept_pain_df, concept_themes)
-        trends_url = build_dynamic_trends_explore_url(concept_pain_df, concept_themes)
-        st.link_button("Open Google Trends Explore", trends_url)
-        st.caption(
-            "Google Trends opens with 5 high-intent women hair-care queries for India "
-            "(seed market terms + detected pain-theme terms + pain-phrase terms). "
-            "Download CSV from that page and upload below to power concept-level search traction."
-        )
-        st.markdown("**Current query set used for fetch:**")
-        st.caption(" | ".join(trend_terms))
-        trends_file = st.file_uploader(
-            "Upload Google Trends CSV (optional)",
-            type=["csv"],
-            accept_multiple_files=False,
-            key="trends_csv_uploader_step3",
-        )
-        if trends_file:
-            with st.expander(f"Trends File: {trends_file.name}", expanded=False):
-                try:
-                    trends_df = read_google_trends_csv(trends_file)
-                    st.session_state.current_trends_dataset = trends_df.copy()
-                    st.session_state.current_trends_dataset_name = trends_file.name
-                    trends_summary = build_trends_signal_summary(trends_df)
-                    tcol1, tcol2, tcol3 = st.columns(3)
-                    tcol1.metric("Rows", len(trends_df))
-                    tcol2.metric("Columns", len(trends_df.columns))
-                    tcol3.metric("Search Data Points", trends_summary["search_data_points"])
-                    st.caption(
-                        f"Avg Search Interest: {trends_summary['search_interest_avg']} | "
-                        f"Top Search Term: {trends_summary['top_search_term']}"
-                    )
-                    st.dataframe(trends_df.head(5), use_container_width=True)
-                    st.success("Google Trends data uploaded.")
-                except Exception as exc:
-                    st.error(
-                        "Could not read Google Trends CSV. Please upload the original CSV downloaded "
-                        f"from Google Trends. Technical detail: {exc}"
-                    )
-        elif st.session_state.current_trends_dataset is not None:
-            st.info(
-                f"Using trends file: {st.session_state.current_trends_dataset_name}. "
-                "Upload another CSV to replace it."
-            )
-        if st.session_state.current_trends_dataset is None:
-                st.info(
-                    "No Google Trends CSV uploaded yet. Search traction will use local fallback signals only."
-                )
-        else:
-            st.caption(
-                f"Using search trends file: {st.session_state.current_trends_dataset_name}"
-            )
-        generation_mode = st.radio(
-            "Generation Mode",
-            ["Deterministic", "LLM"],
-            horizontal=True,
-        )
-        use_local_llm = generation_mode == "LLM"
-        llm_model = "google/flan-t5-base"
-        local_files_only = False
-        if use_local_llm:
-            st.markdown("### LLM Settings")
-            llm_col1, llm_col2 = st.columns(2)
-            llm_model = llm_col1.text_input("Model ID", value="google/flan-t5-base")
-            local_files_only = llm_col2.checkbox(
-                "Local files only",
-                value=False,
-                help="When OFF, model can auto-download on first run.",
-            )
-            st.caption(
-                "LLM mode uses local Transformers. First run may download model files."
-            )
-        else:
-                st.caption(
-                    "Deterministic mode uses local women hair-care heuristics (fast and stable)."
-                )
+        
 
         if not concept_themes:
             st.info("No pain themes detected yet. Refine data quality or add more complaint-heavy data.")
@@ -3232,7 +3820,6 @@ if st.session_state.active_tab == "Product Concepts":
                 for _ in range(per_theme_targets[theme_idx]):
                     sequential_targets.append(theme)
 
-            progress_text = st.empty()
             progress_bar = st.progress(0.0)
 
             total_targets = max(1, len(sequential_targets))
@@ -3242,16 +3829,13 @@ if st.session_state.active_tab == "Product Concepts":
             rendered_concepts: List[Dict[str, object]] = []
 
             for seq_idx, theme in enumerate(sequential_targets, start=1):
-                progress_text.caption(f"Generating concept {seq_idx} of {total_targets}...")
                 single_df = generate_product_concepts(
                     themes=[theme],
                     pain_df=concept_pain_df,
                     data_df=concept_df_source,
                     trends_df=st.session_state.current_trends_dataset,
                     selected_capabilities=selected_capabilities,
-                    use_local_llm=use_local_llm,
-                    llm_model=llm_model,
-                    local_files_only=local_files_only,
+                    use_local_llm=False,
                     min_concepts=1,
                     max_concepts=1,
                     concept_index_seed=seq_idx - 1,
@@ -3266,31 +3850,9 @@ if st.session_state.active_tab == "Product Concepts":
 
                 progress_bar.progress(seq_idx / total_targets)
 
-            progress_text.caption(
-                f"Generation complete: {len(rendered_concepts)} of {total_targets} concepts generated."
-            )
-
             if not rendered_concepts:
-                failure_text = ", ".join([f"{k}: {v}" for k, v in dict(all_failures).items()]) if all_failures else "unknown"
-                if use_local_llm:
-                    st.warning(
-                        "Could not generate concept briefs from current themes. "
-                        f"LLM reasons: {failure_text}"
-                    )
-                else:
-                    st.warning("Could not generate concept briefs from current themes in deterministic mode.")
+                st.warning("Could not generate concept briefs from current themes in deterministic mode.")
             else:
-                if use_local_llm:
-                    st.success(
-                        f"LLM generated {len(rendered_concepts)} concept brief(s) "
-                        f"from {total_attempted} field-level prompt attempt(s)."
-                    )
-                else:
-                    st.success(f"Deterministic mode generated {len(rendered_concepts)} concept brief(s).")
-                if use_local_llm and all_failures:
-                    failure_text = ", ".join([f"{k}: {v}" for k, v in dict(all_failures).items()])
-                    st.info(f"LLM warnings: {failure_text}")
-
                 concepts_df = pd.DataFrame(rendered_concepts).copy()
                 concepts_df = enrich_opportunity_scores(
                     concepts_df,

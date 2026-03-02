@@ -1,73 +1,55 @@
-# AI Product Inventor
+# Hair Care Opportunity Studio (India)
 
-Beginner-friendly Streamlit app for turning women hair-care consumer discussions into:
-- pain-point insights
-- sentiment and theme summaries
-- LLM-generated product concept briefs
+Streamlit app to turn women hair-care consumer data into:
+- pain insights
+- sentiment + theme clusters
+- product opportunity concepts
 
-## Current Flow
+## App Flow
 
-The app follows a forward journey:
 1. `Upload Data`
 2. `Insights`
 3. `Product Concepts`
 
-## Input Sources
+## Step 1: Required Inputs (All 3 Mandatory)
 
-1. Marketplace upload (`.xlsx`)
-- Required columns: exactly `Title` and `Body`
-- No extra columns allowed
+You must complete all three before moving to Insights:
 
-2. Reddit public fetch (no API key)
-- Uses Reddit public JSON endpoints
-- Inputs: subreddits + keywords + lookback window
-- Extracts post titles/bodies and comment bodies
+1. Marketplace Reviews (`.xlsx`)
+- Exact columns required: `Title`, `Body`
+- Template download is available in-app
 
-You can still download a ready XLSX template directly in the app.
+2. Reddit Discussions
+- Option A: fetch from Reddit public endpoints (no API key)
+- Option B: upload prepared Reddit `.xlsx` (`Title`, `Body`)
+- Fetched/uploaded Reddit data is cleaned before use:
+  - removes junk/bot/auto messages
+  - removes duplicates
+  - removes male-context rows for this women-focused workflow
 
-## What You See
+3. Google Trends
+- App generates multiple Trends batches (5 terms per batch)
+- Each batch has:
+  - `Open Google Trends Explore (Batch N)`
+  - `Upload Google Trends CSV - Batch N`
+- Uploaded batches are auto-combined into one trends dataset
 
-### 1) Upload Data
-- Choose source:
-  - Marketplace Upload (XLSX)
-  - Reddit Public Fetch (No API Key)
-- Dataset summary:
-  - row count
-  - column count
-  - first 5 rows preview
-- `Next -> Insights` activates after valid upload
+## Step 2: Insights
 
-### 2) Insights
-- Top recurring pain phrases (complaint-focused)
-- Sentiment breakdown:
-  - `% Negative`, `% Neutral`, `% Positive`
-  - compact pie chart
-- Top pain themes:
-  - mention count
-  - up to 5 supporting quotes per theme
-- `Next -> Product Concepts`
+- Top recurring pain keywords as bubble chart
+  - each bubble maps to a theme
+  - hover shows unique example snippets
+- Sentiment breakdown (`% Negative`, `% Neutral`, `% Positive`) + pie chart
+- Top pain themes with mentions + supporting quotes
 
-### 3) Product Concepts
-- Auto-targets 8-10 concepts based on detected theme count
-- Generation mode toggle:
-  - `Deterministic`: uses built-in women hair-care knowledge base (profiles, ingredients, pricing, positioning)
-  - `LLM`: uses local model generation
-- Generates concepts sequentially (one by one)
-- Shows generation progress at top
-- Renders each concept as soon as it is ready
-- Optional: upload Google Trends CSV in this step for search-traction enrichment
-  - app provides dynamic Google Trends Explore link with generated query set
-- Each concept contains only:
-  - Product Name
-  - Target Consumer Profile
-  - Key Ingredients / Formulation Direction
-  - Suggested Price Point
-  - Format
-  - Competitive Positioning
+## Step 3: Product Concepts
 
-## Windows Setup
+- Deterministic generation (LLM mode removed)
+- Generates 8-10 concepts (based on detected theme count)
+- Opportunity cards + `View Brief` details
+- Evidence section shows short, relevant snippets pulled from Step 1 Marketplace + Reddit data
 
-From repository root (PowerShell):
+## Local Run (Windows / PowerShell)
 
 ```powershell
 python -m venv .venv
@@ -76,22 +58,15 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Open the URL shown in terminal (usually `http://localhost:8501`).
-
-## Notes on Local LLM
-
-- App uses local Transformers inference.
-- Default model is `google/flan-t5-base`.
-- On first run, model download may be required.
-- Keep internet available for first download when `local_files_only=False`.
+Open `http://localhost:8501`.
 
 ## Streamlit Community Cloud Deployment
 
-1. Push this repo to GitHub.
-2. Create a new app in Streamlit Community Cloud.
-3. Set main file to `app.py`.
-4. Deploy.
+1. Push repo to GitHub
+2. Create app in Streamlit Community Cloud
+3. Set entrypoint to `app.py`
+4. Deploy
 
 Notes:
-- Dependencies are listed in `requirements.txt`.
-- Model download time can impact cold starts on free tier.
+- Reddit fetch can hit network/rate-limit restrictions in cloud environments.
+- If that happens, use prepared Reddit XLSX upload route.
