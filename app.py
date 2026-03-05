@@ -4,6 +4,7 @@ import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -24,7 +25,84 @@ st.set_page_config(
     layout="wide",
 )
 
-st.markdown(
+PROJECT_ROOT = Path(__file__).resolve().parent
+PRODUCT_CONFIG: Dict[str, Dict[str, object]] = {
+    "Hair Care": {
+        "slug": "hair_care",
+        "title": "Women's Hair Care Opportunity Studio (India)",
+        "subtitle": (
+            "Turn consumer pain signals into evidence-backed product opportunities "
+            "for the Indian women's hair-care market."
+        ),
+        "sample_dir": PROJECT_ROOT / "data" / "sample" / "hair_care",
+        "upload_dir": PROJECT_ROOT / "data" / "uploads" / "hair_care",
+        "market_lens": "Indian women's hair-care",
+        "default_subreddits": "IndianSkincareAddicts, HaircareScience, FemaleHairAdvice",
+        "default_keywords": "women hair fall, hair thinning women, scalp irritation, dandruff women, hair regrowth",
+        "reddit_upload_only": False,
+    },
+    "Vitamin C Serum": {
+        "slug": "vitamin_c",
+        "title": "Vitamin C Serum Opportunity Studio (India)",
+        "subtitle": (
+            "Turn consumer pain signals into evidence-backed product opportunities "
+            "for India's Vitamin C skincare market."
+        ),
+        "sample_dir": PROJECT_ROOT / "data" / "sample" / "vitamin_c",
+        "upload_dir": PROJECT_ROOT / "data" / "uploads" / "vitamin_c",
+        "market_lens": "Indian Vitamin C skincare",
+        "default_subreddits": "IndianSkincareAddicts,SkincareAddiction,AsianBeauty",
+        "default_keywords": "vitamin c serum, hyperpigmentation, dark spots, acne marks, oxidation, irritation",
+        "reddit_upload_only": False,
+    },
+}
+PRODUCT_CONFIG_BY_SLUG: Dict[str, Dict[str, object]] = {
+    str(cfg["slug"]): cfg for cfg in PRODUCT_CONFIG.values()
+}
+for _cfg in PRODUCT_CONFIG.values():
+    Path(_cfg["upload_dir"]).mkdir(parents=True, exist_ok=True)
+
+
+def _ns_key(product_slug: str, key: str) -> str:
+    """Namespace session-state keys by selected product."""
+    return f"{product_slug}__{key}"
+
+
+def get_active_cfg(product_name: str) -> Dict[str, object]:
+    """Resolve user-facing product label to product config."""
+    return PRODUCT_CONFIG[product_name]
+
+
+def sync_active_product_to_legacy_state(product_slug: str) -> None:
+    """Keep legacy global session keys in sync for active product only."""
+    dataset_map = {
+        "marketplace_dataset": "marketplace_dataset",
+        "marketplace_dataset_name": "marketplace_dataset_name",
+        "reddit_dataset": "reddit_dataset",
+        "reddit_dataset_name": "reddit_dataset_name",
+        "current_trends_dataset": "current_trends_dataset",
+        "current_trends_dataset_name": "current_trends_dataset_name",
+        "current_dataset": "current_dataset",
+        "current_dataset_name": "current_dataset_name",
+        "current_dataset_source": "current_dataset_source",
+    }
+    for ns_tail, legacy_key in dataset_map.items():
+        st.session_state[legacy_key] = st.session_state.get(_ns_key(product_slug, ns_tail))
+
+
+if "selected_product_category" not in st.session_state:
+    st.session_state.selected_product_category = "Hair Care"
+
+st.markdown("## AI Product Inventor")
+product_choice = st.selectbox(
+    "Select Product Category",
+    list(PRODUCT_CONFIG.keys()),
+    key="selected_product_category",
+)
+active_cfg = get_active_cfg(product_choice)
+active_product_slug = str(active_cfg["slug"])
+
+hero_html = (
     """
     <style>
       :root {
@@ -110,8 +188,27 @@ st.markdown(
         <div class="chip">Inputs: Reviews + Trends</div>
       </div>
     </div>
-    """,
-    unsafe_allow_html=True,
+    """
+)
+hero_html = re.sub(
+    r'(<div class="hero-title">)(.*?)(</div>)',
+    lambda m: f'{m.group(1)}{active_cfg["title"]}{m.group(3)}',
+    hero_html,
+    count=1,
+    flags=re.S,
+)
+hero_html = re.sub(
+    r'(<div class="hero-sub">)(.*?)(</div>)',
+    lambda m: f'{m.group(1)}{active_cfg["subtitle"]}{m.group(3)}',
+    hero_html,
+    count=1,
+    flags=re.S,
+)
+hero_html = hero_html.replace("Category: Hair Care", f"Category: {product_choice}")
+st.markdown(hero_html, unsafe_allow_html=True)
+
+st.markdown(
+    "Repository: [github.com/HarshaJAIN005604/product-insights-app](https://github.com/HarshaJAIN005604/product-insights-app)"
 )
 
 
@@ -738,11 +835,13 @@ def combine_trends_batches(frames: List[pd.DataFrame]) -> pd.DataFrame:
     return combined
 
 
-def build_combined_required_dataset() -> Optional[pd.DataFrame]:
+def build_combined_required_dataset(product_slug: Optional[str] = None) -> Optional[pd.DataFrame]:
     """Combine mandatory text sources (marketplace + reddit) into one analysis dataset."""
     parts: List[pd.DataFrame] = []
-    marketplace_df = st.session_state.marketplace_dataset
-    reddit_df = st.session_state.reddit_dataset
+    marketplace_key = _ns_key(product_slug, "marketplace_dataset") if product_slug else "marketplace_dataset"
+    reddit_key = _ns_key(product_slug, "reddit_dataset") if product_slug else "reddit_dataset"
+    marketplace_df = st.session_state.get(marketplace_key)
+    reddit_df = st.session_state.get(reddit_key)
     if isinstance(marketplace_df, pd.DataFrame) and not marketplace_df.empty:
         parts.append(marketplace_df[["title", "body"]].copy())
     if isinstance(reddit_df, pd.DataFrame) and not reddit_df.empty:
@@ -755,17 +854,91 @@ def build_combined_required_dataset() -> Optional[pd.DataFrame]:
     return combined
 
 
-def refresh_combined_dataset_state() -> None:
+def refresh_combined_dataset_state(product_slug: Optional[str] = None) -> None:
     """Refresh current dataset state from mandatory source datasets."""
-    combined = build_combined_required_dataset()
+    combined = build_combined_required_dataset(product_slug=product_slug)
+    current_key = _ns_key(product_slug, "current_dataset") if product_slug else "current_dataset"
+    current_name_key = _ns_key(product_slug, "current_dataset_name") if product_slug else "current_dataset_name"
+    current_source_key = _ns_key(product_slug, "current_dataset_source") if product_slug else "current_dataset_source"
     if combined is None or combined.empty:
-        st.session_state.current_dataset = None
-        st.session_state.current_dataset_name = ""
-        st.session_state.current_dataset_source = ""
+        st.session_state[current_key] = None
+        st.session_state[current_name_key] = ""
+        st.session_state[current_source_key] = ""
     else:
-        st.session_state.current_dataset = combined
-        st.session_state.current_dataset_name = "combined_marketplace_reddit"
-        st.session_state.current_dataset_source = "combined"
+        st.session_state[current_key] = combined
+        st.session_state[current_name_key] = "combined_marketplace_reddit"
+        st.session_state[current_source_key] = "combined"
+    if product_slug:
+        sync_active_product_to_legacy_state(product_slug)
+
+
+def pick_sample_file(sample_dir: Path, patterns: List[str]) -> Optional[Path]:
+    """Return first matching file from sample directory."""
+    if not sample_dir.exists():
+        return None
+    for pattern in patterns:
+        matches = sorted([p for p in sample_dir.glob(pattern) if p.is_file()])
+        if matches:
+            return matches[0]
+    return None
+
+
+def maybe_load_vitamin_c_sample_data(product_slug: str) -> None:
+    """Best-effort sample fallback for Vitamin C only."""
+    if product_slug != "vitamin_c":
+        return
+    cfg = PRODUCT_CONFIG_BY_SLUG.get(product_slug)
+    if not cfg:
+        return
+    sample_dir = Path(cfg["sample_dir"])
+    marketplace_key = _ns_key(product_slug, "marketplace_dataset")
+    marketplace_name_key = _ns_key(product_slug, "marketplace_dataset_name")
+    reddit_key = _ns_key(product_slug, "reddit_dataset")
+    reddit_name_key = _ns_key(product_slug, "reddit_dataset_name")
+    trends_key = _ns_key(product_slug, "current_trends_dataset")
+    trends_name_key = _ns_key(product_slug, "current_trends_dataset_name")
+
+    if st.session_state.get(marketplace_key) is None:
+        sample_marketplace = pick_sample_file(sample_dir, ["*reviews*.xlsx", "*.xlsx"])
+        if sample_marketplace:
+            try:
+                sample_marketplace_df = prepare_marketplace_dataframe(pd.read_excel(sample_marketplace))
+                st.session_state[marketplace_key] = sample_marketplace_df.copy()
+                st.session_state[marketplace_name_key] = f"sample:{sample_marketplace.name}"
+            except Exception:
+                pass
+
+    if st.session_state.get(reddit_key) is None:
+        reddit_candidates = sorted(
+            [p for p in sample_dir.glob("*.csv") if p.is_file() and "reddit" in p.name.lower()]
+        )
+        sample_reddit = reddit_candidates[0] if reddit_candidates else None
+        if sample_reddit:
+            try:
+                raw_reddit_df = pd.read_csv(sample_reddit)
+                prepared_reddit_df = prepare_marketplace_dataframe(raw_reddit_df)
+                cleaned_reddit_df, _ = clean_reddit_dataframe(prepared_reddit_df)
+                st.session_state[reddit_key] = cleaned_reddit_df.copy()
+                st.session_state[reddit_name_key] = f"sample:{sample_reddit.name}"
+            except Exception:
+                pass
+
+    if st.session_state.get(trends_key) is None:
+        trend_csv_files = sorted(
+            [p for p in sample_dir.glob("*.csv") if p.is_file() and "reddit" not in p.name.lower()]
+        )
+        trend_frames: List[pd.DataFrame] = []
+        trend_names: List[str] = []
+        for trend_file in trend_csv_files:
+            try:
+                trend_frames.append(pd.read_csv(trend_file))
+                trend_names.append(trend_file.name)
+            except Exception:
+                continue
+        if trend_frames:
+            sample_trends_df = combine_trends_batches(trend_frames)
+            st.session_state[trends_key] = sample_trends_df.copy()
+            st.session_state[trends_name_key] = " + ".join(trend_names)
 
 
 def reddit_public_get_json(url: str, timeout_sec: int = 25) -> Dict[str, object]:
@@ -1216,43 +1389,83 @@ def build_trends_signal_summary(trends_df: Optional[pd.DataFrame]) -> Dict[str, 
 def build_dynamic_trends_seed_terms(
     pain_df: pd.DataFrame,
     themes: List[Dict[str, object]],
+    category: str = "Hair Care",
 ) -> List[str]:
-    """Build a comprehensive Google Trends seed set for women hair-care in India."""
-    terms: List[str] = [
-        "women hair fall",
-        "hair growth serum women",
-        "anti hair fall shampoo women",
-        "scalp irritation women",
-        "hair regrowth for women",
-        "best hair serum for women india",
-        "best shampoo for hair fall women",
-        "women dandruff treatment",
-        "dry scalp treatment women",
-        "itchy scalp women remedy",
-        "postpartum hair fall women",
-        "hair thinning in women",
-        "female pattern hair loss india",
-        "hair breakage women",
-        "frizzy hair serum women",
-        "oily scalp shampoo women",
-        "sulfate free shampoo women india",
-        "paraben free shampoo women india",
-        "keratin shampoo women india",
-        "biotin for hair growth women",
-        "rosemary oil for hair growth women",
-        "onion hair oil women india",
-        "scalp exfoliation women",
-        "non sticky hair serum women",
-        "hair care routine women india",
-    ]
+    """Build Google Trends seed terms aligned to selected product category."""
+    category_lc = str(category).lower()
+    is_vitamin_c = "vitamin c" in category_lc or "vit c" in category_lc
 
-    theme_query_map = {
-        "No Visible Results After Long-Term Use": "hair regrowth not working women",
-        "Rebound Hair Fall After Stopping Usage": "hair fall after stopping serum",
-        "Product Runs Out Too Fast": "best value hair serum women",
-        "Scalp Dryness & Irritation": "scalp irritation from hair serum",
-        "Perceived Waste of Money": "best affordable hair fall treatment women",
-    }
+    if is_vitamin_c:
+        terms: List[str] = [
+            "vitamin c serum",
+            "best vitamin c serum india",
+            "ascorbic acid serum",
+            "hyperpigmentation serum",
+            "dark spots serum india",
+            "vitamin c for acne marks",
+            "vitamin c serum oxidation",
+            "vitamin c skin irritation",
+            "glowing skin serum",
+            "face brightening serum",
+            "niacinamide and vitamin c",
+            "alpha arbutin vitamin c",
+            "vitamin c serum for oily skin",
+            "vitamin c serum for dry skin",
+            "vitamin c serum for sensitive skin",
+            "vitamin c serum for combination skin",
+            "how to use vitamin c serum",
+            "vitamin c serum side effects",
+            "vitamin c serum beginner",
+            "affordable vitamin c serum india",
+            "best vitamin c serum under 500",
+            "best vitamin c serum under 1000",
+            "oxidized vitamin c serum",
+            "non sticky vitamin c serum",
+            "dermatologist recommended vitamin c serum",
+        ]
+        theme_query_map = {
+            "No Visible Results After Long-Term Use": "vitamin c serum not working",
+            "Rebound Hair Fall After Stopping Usage": "vitamin c serum results stopped",
+            "Product Runs Out Too Fast": "best value vitamin c serum",
+            "Scalp Dryness & Irritation": "vitamin c serum irritation",
+            "Perceived Waste of Money": "best affordable vitamin c serum india",
+        }
+    else:
+        terms = [
+            "women hair fall",
+            "hair growth serum women",
+            "anti hair fall shampoo women",
+            "scalp irritation women",
+            "hair regrowth for women",
+            "best hair serum for women india",
+            "best shampoo for hair fall women",
+            "women dandruff treatment",
+            "dry scalp treatment women",
+            "itchy scalp women remedy",
+            "postpartum hair fall women",
+            "hair thinning in women",
+            "female pattern hair loss india",
+            "hair breakage women",
+            "frizzy hair serum women",
+            "oily scalp shampoo women",
+            "sulfate free shampoo women india",
+            "paraben free shampoo women india",
+            "keratin shampoo women india",
+            "biotin for hair growth women",
+            "rosemary oil for hair growth women",
+            "onion hair oil women india",
+            "scalp exfoliation women",
+            "non sticky hair serum women",
+            "hair care routine women india",
+        ]
+
+        theme_query_map = {
+            "No Visible Results After Long-Term Use": "hair regrowth not working women",
+            "Rebound Hair Fall After Stopping Usage": "hair fall after stopping serum",
+            "Product Runs Out Too Fast": "best value hair serum women",
+            "Scalp Dryness & Irritation": "scalp irritation from hair serum",
+            "Perceived Waste of Money": "best affordable hair fall treatment women",
+        }
 
     if themes:
         for theme in themes[:3]:
@@ -1265,7 +1478,10 @@ def build_dynamic_trends_seed_terms(
         for phrase in pain_df["pain_point"].astype(str).head(5).tolist():
             cleaned = phrase.replace("_", " ").strip().lower()
             if cleaned:
-                if "hair" not in cleaned:
+                if is_vitamin_c:
+                    if "vitamin c" not in cleaned and "serum" not in cleaned:
+                        cleaned = f"{cleaned} vitamin c serum"
+                elif "hair" not in cleaned:
                     cleaned = f"{cleaned} hair women"
                 terms.append(cleaned)
 
@@ -1296,9 +1512,10 @@ def build_trends_explore_url_from_terms(terms: List[str]) -> str:
 def build_dynamic_trends_explore_url(
     pain_df: pd.DataFrame,
     themes: List[Dict[str, object]],
+    category: str = "Hair Care",
 ) -> str:
     """Build a pre-filled Google Trends URL from detected high-intent terms."""
-    selected = build_dynamic_trends_seed_terms(pain_df, themes)
+    selected = build_dynamic_trends_seed_terms(pain_df, themes, category=category)
     return build_trends_explore_url_from_terms(selected)
 
 
@@ -2976,6 +3193,169 @@ def infer_target_concept_count(theme_count: int) -> int:
     return max(8, min(10, theme_count + 6))
 
 
+def _find_price_column(df):
+    if df is None or len(df) == 0:
+        return None
+    candidates = ["price", "mrp", "selling_price", "final_price", "amount", "value", "\u20b9", "inr"]
+    cols = {str(c).strip().lower(): c for c in df.columns}
+    for k, orig in cols.items():
+        if any(word in k for word in candidates):
+            return orig
+    return None
+
+
+def _clean_price_series(s):
+    # Converts "₹499", "499.0", "Rs. 699" -> numeric
+    s = s.astype(str).str.replace(",", "", regex=False)
+    s = s.str.replace("\u20b9", "", regex=False).str.replace("rs.", "", regex=False).str.replace("rs", "", regex=False)
+    s = s.str.extract(r"(\d+\.?\d*)", expand=False)
+    return pd.to_numeric(s, errors="coerce")
+
+
+def estimate_price_from_reviews(df_reviews):
+    """
+    If review dataset contains a price-like column, estimate a realistic band from percentiles.
+    Returns (price_point, price_band) or (None, None)
+    """
+    if df_reviews is None or len(df_reviews) == 0:
+        return (None, None)
+
+    col = _find_price_column(df_reviews)
+    if col is None:
+        return (None, None)
+
+    prices = _clean_price_series(df_reviews[col]).dropna()
+    if len(prices) < 5:
+        return (None, None)
+
+    p25 = float(prices.quantile(0.25))
+    p50 = float(prices.quantile(0.50))
+    p75 = float(prices.quantile(0.75))
+
+    # Round to nice Indian price points
+    def rnd(x):
+        return int(round(x / 50.0) * 50)
+
+    low = max(99, rnd(p25))
+    mid = max(99, rnd(p50))
+    high = max(low + 50, rnd(p75))
+
+    return (mid, f"\u20b9{low}\u2013\u20b9{high}")
+
+
+def fallback_price_by_format(category, fmt):
+    """
+    Conservative India D2C heuristic price bands if no price column exists.
+    Returns (price_point, price_band)
+    """
+    category = (category or "").lower()
+    fmt = (fmt or "").lower()
+
+    # Default bands by format
+    bands = {
+        "serum": (599, "\u20b9499\u2013\u20b9799"),
+        "shampoo": (399, "\u20b9299\u2013\u20b9499"),
+        "conditioner": (399, "\u20b9299\u2013\u20b9499"),
+        "oil": (449, "\u20b9349\u2013\u20b9599"),
+        "mask": (499, "\u20b9399\u2013\u20b9699"),
+        "tablet": (599, "\u20b9499\u2013\u20b9899"),
+        "capsule": (599, "\u20b9499\u2013\u20b9899"),
+        "gummy": (699, "\u20b9599\u2013\u20b9999"),
+        "spray": (499, "\u20b9399\u2013\u20b9699"),
+        "toner": (499, "\u20b9399\u2013\u20b9699"),
+        "cleanser": (399, "\u20b9299\u2013\u20b9499"),
+        "moisturizer": (499, "\u20b9399\u2013\u20b9699"),
+    }
+
+    # pick best matching key
+    for k in bands:
+        if k in fmt:
+            return bands[k]
+
+    # category-specific fallback
+    if "vitamin" in category or "vit c" in category or "vitamin c" in category:
+        return (599, "\u20b9499\u2013\u20b9899")
+    if "hair" in category:
+        return (499, "\u20b9399\u2013\u20b9699")
+
+    return (499, "\u20b9399\u2013\u20b9699")
+
+
+def attach_price_to_concept(concept: dict, category: str, df_reviews):
+    """
+    Adds price fields to an existing concept dict without changing any existing keys.
+    """
+    fmt = concept.get("format") or concept.get("product_format") or concept.get("Format") or ""
+    # Try real price estimation first
+    mid, band = estimate_price_from_reviews(df_reviews)
+
+    if mid is None or band is None:
+        mid, band = fallback_price_by_format(category, fmt)
+
+    concept["price_point_inr"] = int(mid)
+    concept["price_band_inr"] = band
+    return concept
+
+
+def adapt_concept_for_category_display(
+    concept: Dict[str, object],
+    category: str,
+    concept_index: int = 0,
+) -> Dict[str, object]:
+    """
+    Make concept copy format/name/category-relevant for display without touching scoring math.
+    """
+    category_lc = str(category).lower()
+    is_vitamin_c = "vitamin c" in category_lc or "vit c" in category_lc
+    if not is_vitamin_c:
+        return concept
+
+    adapted = dict(concept)
+    format_value = str(adapted.get("format", "")).strip()
+    format_map = {
+        "Shampoo": "Cleanser",
+        "Tablet": "Serum",
+        "Gummy": "Serum",
+        "Scalp Tonic": "Toner",
+        "Leave-In Mist": "Toner",
+    }
+    allowed_formats = {"Serum", "Toner", "Cleanser", "Moisturizer", "Mask"}
+    format_value = format_map.get(format_value, format_value)
+    if format_value not in allowed_formats:
+        format_value = "Serum"
+    adapted["format"] = format_value
+
+    replacements = [
+        (r"\bwomen hair-care\b", "women skincare"),
+        (r"\bhair[-\s]*care\b", "skincare"),
+        (r"\bhair[-\s]*fall\b", "uneven skin tone"),
+        (r"\bshedding\b", "visible dullness"),
+        (r"\bscalp\b", "skin"),
+        (r"\bfollicle[s]?\b", "skin barrier"),
+        (r"\bregrowth\b", "brightening"),
+        (r"\bdandruff\b", "skin flaking"),
+    ]
+    for field in ["theme", "target_consumer", "ingredients", "positioning", "evidence"]:
+        text = str(adapted.get(field, ""))
+        for pat, repl in replacements:
+            text = re.sub(pat, repl, text, flags=re.IGNORECASE)
+        adapted[field] = text
+
+    name_text = str(adapted.get("product_name", ""))
+    hair_name_hit = bool(
+        re.search(r"\b(hair|scalp|root|follicle|regrow|dandruff|shampoo|gummy|tablet)\b", name_text, re.IGNORECASE)
+    )
+    if hair_name_hit or not name_text.strip():
+        stems = ["LumiC", "VitaGlow", "Radiance C", "BrightC", "Derma C", "GlowPulse C"]
+        desc = ["Clarify", "EvenTone", "SpotFade", "Calm", "Glow", "Refine"]
+        adapted["product_name"] = (
+            f"{stems[concept_index % len(stems)]} "
+            f"{desc[concept_index % len(desc)]} {format_value}"
+        )
+
+    return adapted
+
+
 def generate_product_concepts(
     themes: List[Dict[str, object]],
     pain_df: pd.DataFrame,
@@ -3399,7 +3779,7 @@ def generate_product_concepts(
 # -------------------------------
 current_index = FLOW_STEPS.index(st.session_state.active_tab)
 st.caption(
-    f"Journey: {' -> '.join(FLOW_STEPS)} | Market Lens: Indian women’s hair-care"
+    f"Journey: {' -> '.join(FLOW_STEPS)} | Market Lens: {active_cfg['market_lens']}"
 )
 st.progress((current_index + 1) / len(FLOW_STEPS))
 
@@ -3408,14 +3788,131 @@ st.progress((current_index + 1) / len(FLOW_STEPS))
 # Upload Data section
 # -------------------------------
 if st.session_state.active_tab == "Upload Data":
+    marketplace_key = _ns_key(active_product_slug, "marketplace_dataset")
+    marketplace_name_key = _ns_key(active_product_slug, "marketplace_dataset_name")
+    reddit_key = _ns_key(active_product_slug, "reddit_dataset")
+    reddit_name_key = _ns_key(active_product_slug, "reddit_dataset_name")
+    trends_key = _ns_key(active_product_slug, "current_trends_dataset")
+    trends_name_key = _ns_key(active_product_slug, "current_trends_dataset_name")
+    current_dataset_key = _ns_key(active_product_slug, "current_dataset")
+
+    maybe_load_vitamin_c_sample_data(active_product_slug)
+    sync_active_product_to_legacy_state(active_product_slug)
+
+    st.markdown("## 🧠 AI Product Inventor")
+
+    st.markdown(
+        """
+Mine reviews, trends, and Reddit discussions to generate **data-backed product concepts** for the Indian wellness and beauty market.
+
+Unlike traditional dashboards that only monitor trends, this system moves from **insight → invention**, transforming real consumer pain signals into actionable product opportunities.
+"""
+    )
+
+    st.markdown("### 🔬 How the System Works")
+
+    st.markdown(
+        """
+**1️⃣ Review Mining**
+
+Analyzes marketplace reviews from **Amazon, Flipkart, and Nykaa** to detect recurring complaints and unmet consumer needs.
+
+**2️⃣ Forum Listening**
+
+Scans Reddit communities such as **r/IndianSkincareAddicts** and other skincare discussions to capture authentic consumer experiences.
+
+**3️⃣ Trend Validation**
+
+Uses **Google Trends data** to identify rising consumer interest across skincare and wellness categories in India.
+
+**4️⃣ Pain Signal Detection**
+
+Natural language processing clusters recurring complaints and consumer frustrations.
+
+**5️⃣ Product Concept Generation**
+
+The system generates full product concepts including:
+
+• Product name  
+• Target consumer profile  
+• Key ingredients or formulation direction  
+• Suggested price range  
+• Product format (serum, shampoo, tablet, gummy)  
+• Competitive positioning
+"""
+    )
+
+    st.markdown("---")
+
+    st.markdown("### 📊 Data Sources Used")
+
+    st.markdown(
+        """
+This system combines **multiple real-world consumer data sources** to discover unmet needs in the Indian beauty and wellness market.
+"""
+    )
+
+    st.markdown("#### Marketplace Reviews")
+
+    st.markdown(
+        """
+• Amazon  
+• Flipkart  
+• Nykaa
+"""
+    )
+
+    st.markdown("#### Reddit Communities")
+
+    st.markdown(
+        """
+• r/IndianSkincareAddicts  
+• skincare discussion forums
+"""
+    )
+
+    st.markdown("#### Google Trends")
+
+    st.markdown(
+        """
+• Search demand signals for skincare and wellness topics in India.
+"""
+    )
+
+    st.markdown(
+        """
+By combining these signals, the system identifies **real consumer pain points rather than hypothetical ideas.**
+"""
+    )
+
+    with st.expander("📈 How Opportunity Scores Are Calculated"):
+        st.markdown(
+            """
+    Opportunity scores are calculated using multiple signals from consumer data.
+
+    The scoring considers:
+
+    • Frequency of consumer complaints in marketplace reviews  
+    • Recurring discussions across Reddit communities  
+    • Rising search demand from Google Trends  
+    • Strength of pain signals detected in text analysis  
+
+    These signals are combined to identify **product opportunities with strong consumer demand but limited existing solutions.**
+    """
+        )
+
+    st.success(
+        "All product concepts are generated using real consumer signals from reviews, forums, and search trends."
+    )
+
     st.subheader("Step 1: Required Data Inputs (All 3 Needed)")
     st.caption(
         "Complete all three sources below to unlock Insights: Marketplace Reviews + Reddit Discussions + Google Trends."
     )
     status_col1, status_col2, status_col3 = st.columns(3)
-    status_col1.metric("Marketplace", "Ready" if st.session_state.marketplace_dataset is not None else "Pending")
-    status_col2.metric("Reddit", "Ready" if st.session_state.reddit_dataset is not None else "Pending")
-    status_col3.metric("Google Trends", "Ready" if st.session_state.current_trends_dataset is not None else "Pending")
+    status_col1.metric("Marketplace", "Ready" if st.session_state.get(marketplace_key) is not None else "Pending")
+    status_col2.metric("Reddit", "Ready" if st.session_state.get(reddit_key) is not None else "Pending")
+    status_col3.metric("Google Trends", "Ready" if st.session_state.get(trends_key) is not None else "Pending")
 
     st.markdown('<div class="ingest-card">', unsafe_allow_html=True)
     st.markdown("### 1) Marketplace Reviews (Required)")
@@ -3424,30 +3921,6 @@ if st.session_state.active_tab == "Upload Data":
         "Quick prep tip: copy review text from top 5 relevant product listings, paste once into ChatGPT, "
         "ask for a clean XLSX in this template, then upload."
     )
-    with st.expander("Copy-Paste Prompt for ChatGPT (Marketplace Data Prep)", expanded=False):
-        st.code(
-            """I am building a women hair-care insights app for India.
-Convert the raw marketplace review text I provide into a downloadable Excel file (.xlsx)
-with EXACTLY these two columns and names:
-1) Title
-2) Body
-
-Rules:
-- Keep only meaningful consumer review content.
-- Remove spam, duplicate lines, and non-review text.
-- Keep one review per row.
-- If a review has no clear title, create a short title from the sentence.
-- Do not add any extra columns.
-- Preserve original meaning; do not rewrite sentiment.
-
-Output needed:
-- Provide a downloadable .xlsx file named: marketplace_reviews_prepared.xlsx
-- Also show a preview of first 10 rows in table format.
-
-Raw review text starts below:
-[PASTE AMAZON/NYKAA/FLIPKART REVIEWS FROM TOP 5 PRODUCTS HERE]""",
-            language="text",
-        )
     st.download_button(
         label="Download Marketplace XLSX Template",
         data=build_marketplace_template_xlsx_bytes(),
@@ -3459,15 +3932,15 @@ Raw review text starts below:
         "Upload Marketplace XLSX",
         type=["xlsx"],
         accept_multiple_files=False,
-        key="marketplace_xlsx_uploader_required",
+        key=_ns_key(active_product_slug, "marketplace_xlsx_uploader_required"),
         help="Required columns: Title and Body only.",
     )
     if uploaded_file:
         try:
             df = read_xlsx_file(uploaded_file)
             prepared_df = prepare_marketplace_dataframe(df)
-            st.session_state.marketplace_dataset = prepared_df.copy()
-            st.session_state.marketplace_dataset_name = uploaded_file.name
+            st.session_state[marketplace_key] = prepared_df.copy()
+            st.session_state[marketplace_name_key] = uploaded_file.name
             render_dataset_summary_block(prepared_df)
             filtered_count = int(prepared_df.attrs.get("male_filtered", 0))
             if filtered_count > 0:
@@ -3475,8 +3948,8 @@ Raw review text starts below:
             st.success("Marketplace dataset saved.")
         except Exception as exc:
             st.error(f"Marketplace upload failed. {exc}")
-    elif st.session_state.marketplace_dataset is not None:
-        st.info(f"Using marketplace file: {st.session_state.marketplace_dataset_name}")
+    elif st.session_state.get(marketplace_key) is not None:
+        st.info(f"Using marketplace file: {st.session_state.get(marketplace_name_key, '')}")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="ingest-card">', unsafe_allow_html=True)
@@ -3487,22 +3960,67 @@ Raw review text starts below:
         - `Upload Prepared Reddit XLSX`: best for cloud if fetch hits 403/429.
         """
     )
-    reddit_route = st.radio(
-        "Reddit input route",
-        ["Fetch Reddit Data", "Upload Prepared Reddit XLSX"],
-        horizontal=True,
-        key="reddit_route_required",
+    if bool(active_cfg.get("reddit_upload_only", False)):
+        reddit_route = "Upload Prepared Reddit XLSX"
+        st.info("For Vitamin C, Reddit fetch mode is disabled. Upload prepared Reddit data.")
+    else:
+        reddit_route = st.radio(
+            "Reddit input route",
+            ["Fetch Reddit Data", "Upload Prepared Reddit XLSX"],
+            horizontal=True,
+            key=_ns_key(active_product_slug, "reddit_route_required"),
+        )
+    st.caption(
+        "Note: On Streamlit-hosted deployments, `Fetch Reddit Data` can be throttled (403/429). "
+        "To use fetch mode reliably, clone and run this app locally from GitHub. "
+        "If running on Streamlit Cloud, use `Upload Prepared Reddit XLSX` with files from: "
+        "https://github.com/HarshaJAIN005604/product-insights-app"
     )
     if reddit_route == "Fetch Reddit Data":
-        default_subs = "IndianSkincareAddicts, HaircareScience, FemaleHairAdvice"
-        default_keywords = "women hair fall, hair thinning women, scalp irritation, dandruff women, hair regrowth"
-        reddit_subreddits_text = st.text_input("Subreddits (comma-separated)", value=default_subs)
-        reddit_keywords_text = st.text_input("Keywords (comma-separated)", value=default_keywords)
+        default_subs = str(active_cfg.get("default_subreddits", "IndianSkincareAddicts"))
+        default_keywords = str(active_cfg.get("default_keywords", "women hair fall"))
+        reddit_subreddits_text = st.text_input(
+            "Subreddits (comma-separated)",
+            value=default_subs,
+            key=_ns_key(active_product_slug, "reddit_subreddits_text"),
+        )
+        reddit_keywords_text = st.text_input(
+            "Keywords (comma-separated)",
+            value=default_keywords,
+            key=_ns_key(active_product_slug, "reddit_keywords_text"),
+        )
         col_r1, col_r2, col_r3 = st.columns(3)
-        days_back = int(col_r1.slider("Lookback (days)", min_value=30, max_value=365, value=120, step=10))
-        max_posts = int(col_r2.slider("Max posts/subreddit", min_value=20, max_value=120, value=60, step=10))
-        max_comments = int(col_r3.slider("Max comments/post", min_value=5, max_value=80, value=25, step=5))
-        if st.button("Fetch Reddit Discussions"):
+        days_back = int(
+            col_r1.slider(
+                "Lookback (days)",
+                min_value=30,
+                max_value=365,
+                value=120,
+                step=10,
+                key=_ns_key(active_product_slug, "reddit_days_back"),
+            )
+        )
+        max_posts = int(
+            col_r2.slider(
+                "Max posts/subreddit",
+                min_value=20,
+                max_value=120,
+                value=60,
+                step=10,
+                key=_ns_key(active_product_slug, "reddit_max_posts"),
+            )
+        )
+        max_comments = int(
+            col_r3.slider(
+                "Max comments/post",
+                min_value=5,
+                max_value=80,
+                value=25,
+                step=5,
+                key=_ns_key(active_product_slug, "reddit_max_comments"),
+            )
+        )
+        if st.button("Fetch Reddit Discussions", key=_ns_key(active_product_slug, "fetch_reddit_btn")):
             subreddits = [item.strip() for item in reddit_subreddits_text.split(",") if item.strip()]
             keywords = [item.strip() for item in reddit_keywords_text.split(",") if item.strip()]
             if not subreddits:
@@ -3534,8 +4052,8 @@ Raw review text starts below:
                             render_reddit_fetch_diagnostics(reddit_diag)
                         else:
                             cleaned_reddit_df, cleaning_summary = clean_reddit_dataframe(reddit_df)
-                            st.session_state.reddit_dataset = cleaned_reddit_df.copy()
-                            st.session_state.reddit_dataset_name = (
+                            st.session_state[reddit_key] = cleaned_reddit_df.copy()
+                            st.session_state[reddit_name_key] = (
                                 f"reddit_public_{len(subreddits)}subs_{len(keywords)}terms"
                             )
                             render_dataset_summary_block(cleaned_reddit_df)
@@ -3567,7 +4085,7 @@ Raw review text starts below:
             "Upload Prepared Reddit XLSX",
             type=["xlsx"],
             accept_multiple_files=False,
-            key="reddit_manual_xlsx_uploader_required",
+            key=_ns_key(active_product_slug, "reddit_manual_xlsx_uploader_required"),
             help="Required columns: Title and Body only.",
         )
         if reddit_uploaded_file:
@@ -3575,8 +4093,8 @@ Raw review text starts below:
                 reddit_manual_df = read_xlsx_file(reddit_uploaded_file)
                 prepared_reddit_df = prepare_marketplace_dataframe(reddit_manual_df)
                 cleaned_reddit_df, cleaning_summary = clean_reddit_dataframe(prepared_reddit_df)
-                st.session_state.reddit_dataset = cleaned_reddit_df.copy()
-                st.session_state.reddit_dataset_name = reddit_uploaded_file.name
+                st.session_state[reddit_key] = cleaned_reddit_df.copy()
+                st.session_state[reddit_name_key] = reddit_uploaded_file.name
                 render_dataset_summary_block(cleaned_reddit_df)
                 reddit_male_filtered = int(prepared_reddit_df.attrs.get("male_filtered", 0))
                 if reddit_male_filtered > 0:
@@ -3585,17 +4103,21 @@ Raw review text starts below:
                 st.success("Reddit dataset saved.")
             except Exception as exc:
                 st.error(f"Reddit upload failed. {exc}")
-        elif st.session_state.reddit_dataset is not None:
-            st.info(f"Using reddit file: {st.session_state.reddit_dataset_name}")
+        elif st.session_state.get(reddit_key) is not None:
+            st.info(f"Using reddit file: {st.session_state.get(reddit_name_key, '')}")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="ingest-card">', unsafe_allow_html=True)
     st.markdown("### 3) Google Trends (Required)")
-    base_for_terms = st.session_state.marketplace_dataset if st.session_state.marketplace_dataset is not None else pd.DataFrame(columns=["title", "body"])
+    base_for_terms = (
+        st.session_state.get(marketplace_key)
+        if st.session_state.get(marketplace_key) is not None
+        else pd.DataFrame(columns=["title", "body"])
+    )
     base_texts = get_analysis_texts(base_for_terms)
     base_pain_df = build_pain_point_table(base_texts, top_n=20) if base_texts else pd.DataFrame()
     base_themes = build_theme_previews(base_texts, min_themes=3, max_themes=5, pain_df=base_pain_df) if base_texts else []
-    trend_terms = build_dynamic_trends_seed_terms(base_pain_df, base_themes)
+    trend_terms = build_dynamic_trends_seed_terms(base_pain_df, base_themes, category=product_choice)
     trend_batches = build_trends_query_batches(trend_terms, batch_size=5)
     st.caption("Google Trends is split into 5-term batches. Open each batch and upload its CSV.")
     uploaded_trend_frames: List[pd.DataFrame] = []
@@ -3614,7 +4136,7 @@ Raw review text starts below:
                 f"Upload Google Trends CSV - Batch {idx}",
                 type=["csv"],
                 accept_multiple_files=False,
-                key=f"trends_csv_batch_{idx}",
+                key=_ns_key(active_product_slug, f"trends_csv_batch_{idx}"),
             )
         if batch_file:
             try:
@@ -3626,8 +4148,8 @@ Raw review text starts below:
 
     if uploaded_trend_frames:
         trends_df = combine_trends_batches(uploaded_trend_frames)
-        st.session_state.current_trends_dataset = trends_df.copy()
-        st.session_state.current_trends_dataset_name = " + ".join(uploaded_trend_names)
+        st.session_state[trends_key] = trends_df.copy()
+        st.session_state[trends_name_key] = " + ".join(uploaded_trend_names)
         trends_summary = build_trends_signal_summary(trends_df)
         tcol1, tcol2, tcol3 = st.columns(3)
         tcol1.metric("Rows", len(trends_df))
@@ -3639,22 +4161,22 @@ Raw review text starts below:
         )
         st.dataframe(trends_df.head(5), use_container_width=True)
         st.success(f"Google Trends batches combined and saved ({len(uploaded_trend_frames)} batch file(s)).")
-    elif st.session_state.current_trends_dataset is not None:
-        st.info(f"Using trends file(s): {st.session_state.current_trends_dataset_name}")
+    elif st.session_state.get(trends_key) is not None:
+        st.info(f"Using trends file(s): {st.session_state.get(trends_name_key, '')}")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    refresh_combined_dataset_state()
+    refresh_combined_dataset_state(product_slug=active_product_slug)
     all_required_ready = (
-        st.session_state.marketplace_dataset is not None
-        and st.session_state.reddit_dataset is not None
-        and st.session_state.current_trends_dataset is not None
-        and st.session_state.current_dataset is not None
+        st.session_state.get(marketplace_key) is not None
+        and st.session_state.get(reddit_key) is not None
+        and st.session_state.get(trends_key) is not None
+        and st.session_state.get(current_dataset_key) is not None
     )
     if not all_required_ready:
         st.warning("All 3 sources are mandatory. Please complete Marketplace, Reddit, and Google Trends inputs.")
 
     next_disabled = not all_required_ready
-    if st.button("Next -> Insights", disabled=next_disabled):
+    if st.button("Next -> Insights", disabled=next_disabled, key=_ns_key(active_product_slug, "next_to_insights")):
         st.session_state.active_tab = "Insights"
         st.rerun()
 
@@ -3663,17 +4185,23 @@ Raw review text starts below:
 # Insights section
 # -------------------------------
 if st.session_state.active_tab == "Insights":
-    st.subheader("Step 2: Consumer Insight Signals (Women Hair-Care, India)")
+    marketplace_key = _ns_key(active_product_slug, "marketplace_dataset")
+    reddit_key = _ns_key(active_product_slug, "reddit_dataset")
+    trends_key = _ns_key(active_product_slug, "current_trends_dataset")
+    current_dataset_key = _ns_key(active_product_slug, "current_dataset")
+    current_dataset_name_key = _ns_key(active_product_slug, "current_dataset_name")
+
+    st.subheader(f"Step 2: Consumer Insight Signals ({product_choice}, India)")
     required_missing = (
-        st.session_state.marketplace_dataset is None
-        or st.session_state.reddit_dataset is None
-        or st.session_state.current_trends_dataset is None
+        st.session_state.get(marketplace_key) is None
+        or st.session_state.get(reddit_key) is None
+        or st.session_state.get(trends_key) is None
     )
-    if required_missing or st.session_state.current_dataset is None:
+    if required_missing or st.session_state.get(current_dataset_key) is None:
         st.info("Complete all required Step 1 inputs (Marketplace + Reddit + Google Trends), then click Next.")
     else:
-        data_df = st.session_state.current_dataset.copy()
-        data_name = st.session_state.current_dataset_name or "current dataset"
+        data_df = st.session_state[current_dataset_key].copy()
+        data_name = st.session_state.get(current_dataset_name_key, "") or "current dataset"
 
         st.caption(f"Source dataset: {data_name}")
         texts = get_analysis_texts(data_df)
@@ -3768,12 +4296,12 @@ if st.session_state.active_tab == "Insights":
                     st.divider()
 
     next_disabled = (
-        st.session_state.current_dataset is None
-        or st.session_state.current_trends_dataset is None
-        or st.session_state.marketplace_dataset is None
-        or st.session_state.reddit_dataset is None
+        st.session_state.get(current_dataset_key) is None
+        or st.session_state.get(trends_key) is None
+        or st.session_state.get(marketplace_key) is None
+        or st.session_state.get(reddit_key) is None
     )
-    if st.button("Next -> Product Concepts", disabled=next_disabled):
+    if st.button("Next -> Product Concepts", disabled=next_disabled, key=_ns_key(active_product_slug, "next_to_concepts")):
         st.session_state.active_tab = "Product Concepts"
         st.rerun()
 
@@ -3782,16 +4310,24 @@ if st.session_state.active_tab == "Insights":
 # Placeholder sections
 # -------------------------------
 if st.session_state.active_tab == "Product Concepts":
+    marketplace_key = _ns_key(active_product_slug, "marketplace_dataset")
+    reddit_key = _ns_key(active_product_slug, "reddit_dataset")
+    trends_key = _ns_key(active_product_slug, "current_trends_dataset")
+    current_dataset_key = _ns_key(active_product_slug, "current_dataset")
+
     st.subheader("Step 3: Product Opportunity Concepts")
     required_missing = (
-        st.session_state.marketplace_dataset is None
-        or st.session_state.reddit_dataset is None
-        or st.session_state.current_trends_dataset is None
+        st.session_state.get(marketplace_key) is None
+        or st.session_state.get(reddit_key) is None
+        or st.session_state.get(trends_key) is None
     )
-    if required_missing or st.session_state.current_dataset is None:
+    if required_missing or st.session_state.get(current_dataset_key) is None:
         st.info("Complete all required Step 1 inputs before opening Product Concepts.")
     else:
-        concept_df_source = st.session_state.current_dataset.copy()
+        concept_df_source = st.session_state[current_dataset_key].copy()
+        df_reviews = st.session_state.get(marketplace_key)
+        if df_reviews is None:
+            df_reviews = st.session_state.get("marketplace_dataset")
         concept_texts = get_analysis_texts(concept_df_source)
         concept_pain_df = build_pain_point_table(concept_texts, top_n=20)
         concept_themes = build_theme_previews(concept_texts, min_themes=3, max_themes=5, pain_df=concept_pain_df)
@@ -3833,7 +4369,7 @@ if st.session_state.active_tab == "Product Concepts":
                     themes=[theme],
                     pain_df=concept_pain_df,
                     data_df=concept_df_source,
-                    trends_df=st.session_state.current_trends_dataset,
+                    trends_df=st.session_state.get(trends_key),
                     selected_capabilities=selected_capabilities,
                     use_local_llm=False,
                     min_concepts=1,
@@ -3846,7 +4382,11 @@ if st.session_state.active_tab == "Product Concepts":
                 all_failures.update(single_df.attrs.get("llm_failure_reasons", {}))
 
                 if not single_df.empty:
-                    rendered_concepts.extend(single_df.to_dict(orient="records"))
+                    priced_records: List[Dict[str, object]] = []
+                    for concept in single_df.to_dict(orient="records"):
+                        concept = attach_price_to_concept(concept, product_choice, df_reviews)
+                        priced_records.append(concept)
+                    rendered_concepts.extend(priced_records)
 
                 progress_bar.progress(seq_idx / total_targets)
 
@@ -3856,8 +4396,18 @@ if st.session_state.active_tab == "Product Concepts":
                 concepts_df = pd.DataFrame(rendered_concepts).copy()
                 concepts_df = enrich_opportunity_scores(
                     concepts_df,
-                    trends_df=st.session_state.current_trends_dataset,
+                    trends_df=st.session_state.get(trends_key),
                 )
+                concept_records = concepts_df.to_dict(orient="records")
+                concept_records = [
+                    adapt_concept_for_category_display(
+                        concept=row_dict,
+                        category=product_choice,
+                        concept_index=idx,
+                    )
+                    for idx, row_dict in enumerate(concept_records)
+                ]
+                concepts_df = pd.DataFrame(concept_records)
                 concepts_df["concept_id"] = [
                     f"concept_{idx + 1}_{re.sub(r'[^a-z0-9]+', '_', str(name).lower())[:24]}"
                     for idx, name in enumerate(concepts_df["product_name"].tolist())
@@ -3865,7 +4415,7 @@ if st.session_state.active_tab == "Product Concepts":
                 concepts_df = concepts_df.sort_values(by="opportunity_score", ascending=False).reset_index(drop=True)
 
                 # Decision summary: top 3 opportunities
-                st.markdown("### All Identified Women Hair-Care Opportunities")
+                st.markdown(f"### All Identified {product_choice} Opportunities")
                 opportunity_help = (
                     "Opportunity Score = 50% Demand + 25% Competition Advantage + 25% Novelty. "
                     "Demand uses review/forum mentions plus concept-specific search traction and trend momentum. "
@@ -3890,6 +4440,10 @@ if st.session_state.active_tab == "Product Concepts":
                             score_col3.metric("Novelty", f"{float(row.get('novelty_component', 0)):.1f}")
                             st.progress(float(row["opportunity_score"]) / 100.0)
                             st.caption(
+                                f"Suggested Price: \u20b9{int(row.get('price_point_inr', 499))} "
+                                f"(Band: {row.get('price_band_inr', '\u20b9399\u2013\u20b9699')})"
+                            )
+                            st.caption(
                                 f"Reviews: {int(row.get('display_review_mentions', row['review_mentions']))} | "
                                 f"Forums: {int(row.get('display_forum_mentions', row['forum_mentions']))} | "
                                 f"Search Avg: {float(row.get('display_search_interest', row['search_interest_avg']))}"
@@ -3899,4 +4453,5 @@ if st.session_state.active_tab == "Product Concepts":
                             if str(st.session_state.get("focus_concept_id", "")) == str(row["concept_id"]):
                                 st.markdown("**Selected Product Concept Brief**")
                                 render_full_concept_brief(row.to_dict())
+
 

@@ -1,9 +1,18 @@
-# Hair Care Opportunity Studio (India)
+# AI Product Inventor (India)
 
-Streamlit app to turn women hair-care consumer data into:
-- pain insights
-- sentiment + theme clusters
-- product opportunity concepts
+Streamlit app to convert consumer signals into ranked product opportunities for:
+- `Hair Care`
+- `Vitamin C Serum`
+
+The app combines Marketplace reviews, Reddit discussions, and Google Trends data.
+
+## Product Modes
+
+Use the in-app selector:
+- `Hair Care`
+- `Vitamin C Serum`
+
+Each product keeps isolated session data (`marketplace`, `reddit`, `trends`) so inputs do not mix across categories.
 
 ## App Flow
 
@@ -16,38 +25,35 @@ Streamlit app to turn women hair-care consumer data into:
 You must complete all three before moving to Insights:
 
 1. Marketplace Reviews (`.xlsx`)
-- Exact columns required: `Title`, `Body`
+- Required schema: exactly two columns: `Title`, `Body`
 - Template download is available in-app
 
 2. Reddit Discussions
-- Option A: fetch from Reddit public endpoints (no API key)
-- Option B: upload prepared Reddit `.xlsx` (`Title`, `Body`)
-- Fetched/uploaded Reddit data is cleaned before use:
-  - removes junk/bot/auto messages
-  - removes duplicates
-  - removes male-context rows for this women-focused workflow
+- `Fetch Reddit Data` (public Reddit JSON, no API key)
+- `Upload Prepared Reddit XLSX` (`Title`, `Body`)
+- Data cleanup includes junk/mod/bot filtering, deduplication, and context filtering
 
 3. Google Trends
-- App generates multiple Trends batches (5 terms per batch)
-- Each batch has:
-  - `Open Google Trends Explore (Batch N)`
-  - `Upload Google Trends CSV - Batch N`
-- Uploaded batches are auto-combined into one trends dataset
+- Category-aware trend links (Hair Care vs Vitamin C queries)
+- Trends are split into 5-term batches
+- Upload each batch CSV and app combines them
 
 ## Step 2: Insights
 
-- Top recurring pain keywords as bubble chart
-  - each bubble maps to a theme
-  - hover shows unique example snippets
-- Sentiment breakdown (`% Negative`, `% Neutral`, `% Positive`) + pie chart
-- Top pain themes with mentions + supporting quotes
+- Pain keyword bubble chart with theme mapping
+- Sentiment split (`Negative`, `Neutral`, `Positive`)
+- Theme cluster preview with quote evidence
 
 ## Step 3: Product Concepts
 
-- Deterministic generation (LLM mode removed)
-- Generates 8-10 concepts (based on detected theme count)
-- Opportunity cards + `View Brief` details
-- Evidence section shows short, relevant snippets pulled from Step 1 Marketplace + Reddit data
+- Generates ranked opportunity concepts
+- Concept cards include:
+  - Opportunity score + components
+  - Suggested price (`price_point_inr`, `price_band_inr`)
+  - Review/forum/search evidence
+- `View Brief` expands full concept details
+
+For `Vitamin C Serum`, Stage 3 display content is adapted to skincare-relevant naming/format wording.
 
 ## Local Run (Windows / PowerShell)
 
@@ -60,13 +66,11 @@ streamlit run app.py
 
 Open `http://localhost:8501`.
 
-## Streamlit Community Cloud Deployment
+## Streamlit Cloud Notes
 
-1. Push repo to GitHub
-2. Create app in Streamlit Community Cloud
-3. Set entrypoint to `app.py`
-4. Deploy
+- Reddit fetch can be throttled in hosted environments (403/429).
+- If fetch fails, use the prepared Reddit upload route.
 
-Notes:
-- Reddit fetch can hit network/rate-limit restrictions in cloud environments.
-- If that happens, use prepared Reddit XLSX upload route.
+## Repository
+
+https://github.com/HarshaJAIN005604/product-insights-app
